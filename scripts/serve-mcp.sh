@@ -73,18 +73,19 @@ done
 # Propagate signals to the entire process group so child processes
 # (supergateway -> node mcp) are cleaned up when this script is killed.
 cleanup() {
-  # Send TERM to our process group (negative PID), excluding ourselves
-  trap - TERM INT  # prevent re-entry
+  trap - EXIT TERM INT  # prevent re-entry
+  rm -f "${SCRIPT_DIR}/../logs/mcp-server-${PORT}.pid"
   kill -TERM 0 2>/dev/null
   wait
 }
-trap cleanup TERM INT
+trap cleanup EXIT TERM INT
 
 npx supergateway \
   --port "$PORT" \
   --stdio "node ${PROJECT_ROOT}/build/cli.js mcp" \
   --outputTransport streamableHttp \
   --stateful \
+  --sessionTimeout 900000 \
   --cors \
   ${FILTERED_ARGS[@]+"${FILTERED_ARGS[@]}"} &
 
