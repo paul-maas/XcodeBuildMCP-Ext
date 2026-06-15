@@ -32,6 +32,9 @@ src/version.ts
 logs/
 *.log
 
+# Local MCP runtime state (per-developer config and session defaults)
+.xcodebuildmcp/
+
 # Test coverage
 /coverage/
 
