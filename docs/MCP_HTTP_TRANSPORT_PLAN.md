@@ -44,8 +44,7 @@ Three remediations, each addressing one layer; layers A1 + A2 alone close the im
 ### Stage 1 — Layer A1: progress notifications
 
 1.1 Extend `ToolHandlerContext` (`src/rendering/types.ts`):
-- `progressToken?: string | number`
-- `sendProgress?: (params: { progress: number; total?: number; message?: string }) => void`
+- `sendProgress?: (params: { progress: number; total?: number; message?: string }) => void` — undefined when the client did not provide a `progressToken`. The closure captures the token so no caller ever handles it directly (single source of truth).
 - `signal?: AbortSignal`
 
 1.2 In `src/utils/tool-registry.ts:296-360`, accept the SDK's `extra` argument:
@@ -53,39 +52,53 @@ Three remediations, each addressing one layer; layers A1 + A2 alone close the im
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { ServerRequest, ServerNotification } from '@modelcontextprotocol/sdk/types.js';
 ```
-Set `liveProgressEnabled: true` and `streamingFragmentsEnabled: true` unconditionally for the MCP path. Pass `extra._meta?.progressToken` and a wrapper around `extra.sendNotification({ method: 'notifications/progress', params: { progressToken, progress, total, message } })` into `ctx`. The wrapper is a no-op when `progressToken === undefined`, so a single code path serves both progress-aware and progress-blind clients.
+Set `streamingFragmentsEnabled: true` for the MCP path — this is the flag that actually gates fragment forwarding (`src/utils/tool-execution-compat.ts:20`). Leave `liveProgressEnabled: false`: it is an independent CLI-rendering signal and turning it on in MCP mode would activate terminal-oriented paths in `renderCliTextRenderer`. When `extra._meta?.progressToken !== undefined`, build `sendProgress` as a closure that captures the token and forwards to `extra.sendNotification({ method: 'notifications/progress', params: { progressToken, progress, total, message } })`. When the token is absent, leave `ctx.sendProgress` undefined so callers explicitly `?.()` it. One code path either way.
 
-1.3 New module `src/utils/mcp-progress-bridge.ts`:
+1.3 Add the bridging logic **inline** in `src/utils/tool-execution-compat.ts` — a `createFragmentToProgressBridge(sendProgress)` function that returns a fragment handler. Not a separate module: the consumer is one, and CLAUDE.md forbids abstractions beyond need.
+
+Bridge state:
 - Monotonic `progress` counter (never decreases).
-- Throttle: minimum 500 ms between sends, plus a 4-second heartbeat that emits `progress` with the previous counter and `message: "…"` to keep the SSE stream warm even when nothing is happening.
-- Fragment → notification mapping:
-  - `test-discovery.total` → sets `total`.
-  - `stage-transition` / status fragments → `message` + `progress++`.
-  - completed/failed/skipped counts → `progress = passed + failed + skipped`.
-  - `compiler-diagnostic` (severity `error`) → `message: "N errors so far"`.
-  - `process-line` → ignored for notification volume, accumulated for heartbeat freshness only.
+- Throttle: minimum 500 ms between sends.
+- Heartbeat: 4-second `setInterval` emits `progress` with the previous counter and `message: "…"` to keep the SSE stream warm during silent stretches.
+- Timer lifecycle: heartbeat starts on first fragment and stops via `clearInterval` when the pipeline reports finalization or `ctx.signal` aborts. Never leaks past the tool call.
 
-1.4 In the MCP handler, wrap `ctx.emit` to also call `bridge.onFragment(fragment)`.
+Fragment mapping uses the `{ kind, fragment }` two-level discrimination declared in `src/types/domain-fragments.ts`:
+- `kind: 'test-result'`, `fragment: 'test-discovery'` → sets `total` from `.total`.
+- `kind: 'test-result'` with running counts → `progress = passed + failed + skipped`.
+- `kind: 'infrastructure'`, `fragment: 'status'` → `message` + `progress++`.
+- `kind: 'compiler'`, `fragment: 'compiler-diagnostic'`, `severity: 'error'` → `message: "N errors so far"`.
+- `kind: 'transcript'` (`process-command`, `process-line`) → ignored for notification volume; only bumps a heartbeat-freshness marker so silent runs still get their heartbeat.
+
+1.4 In the MCP handler in `tool-registry.ts`, when `ctx.sendProgress` is set: construct the bridge via `createFragmentToProgressBridge(ctx.sendProgress)` and wrap `ctx.emit` to call the bridge handler in addition to the existing `session.emit(fragment)`.
 
 1.5 Verify `Sentry.wrapMcpServerWithSentry` does not turn progress notifications into spans/transactions. If it does, add a span filter.
 
 1.6 Tests:
-- Unit (`src/utils/__tests__/mcp-progress-bridge.test.ts`): monotonicity, throttle, heartbeat, fragment filtering.
-- Integration: tool call without `progressToken` produces zero notifications.
+- Unit (extend the existing `src/utils/__tests__/tool-execution-compat.test.ts` or equivalent): monotonicity, throttle, heartbeat lifecycle (starts on first fragment, cleared on finalize/abort), fragment filtering.
+- Integration: tool call without `progressToken` — `ctx.sendProgress` undefined — produces zero notifications.
 - `src/test-utils/test-helpers.ts` — new context fields default to undefined / no-op so existing tests stay green.
+
+1.7 Deactivation (not removal) of `scripts/patch-supergateway.sh`: with progress notifications flowing, the client's request timer never expires, so the late-send race the patch guards against no longer occurs. Mark the script as no longer required in a header comment but leave the file in place as a safety net. Physical retirement happens in Stage 3.6. Zero runtime change in Stage 1.
 
 ### Stage 2 — Layer A2: AbortSignal propagation
 
-2.1 Add `signal?: AbortSignal` to `CommandExecOptions` (`src/utils/command.ts`). Opt-in only — never propagated to long-lived sessions:
+2.1 Extend `CommandExecOptions` in `src/utils/CommandExecutor.ts` with two new fields:
+- `signal?: AbortSignal`
+- `processGroup?: boolean` — when true, spawn the child in its own process group so a single `process.kill(-pid, ...)` reaches every descendant.
+
+Kept **separate** from the existing positional `detached` parameter of `CommandExecutor`, which has an unrelated "when does the promise resolve" semantics (see the type comment in `CommandExecutor.ts`). Overloading `detached` would silently break the existing contract that `execution` tests rely on.
+
+Both options are opt-in only — never propagated to long-lived sessions:
 - log-capture (`utils/log_capture.ts`, `utils/log-capture/*`),
 - video-capture (`utils/video_capture.ts`),
 - debugger attach (`utils/debugger/*`),
 - daemon-side processes (`daemon/*`).
 
-2.2 In the executor, spawn with `{ signal, detached: true }`. On abort:
+2.2 In `defaultExecutor` in `src/utils/command.ts:68-89` (the sole spawn point of the default executor), extend `spawnOpts` when the new options are set: `spawnOpts.signal = opts.signal`; `spawnOpts.detached = opts.processGroup === true`. On abort:
 - `process.kill(-child.pid, 'SIGTERM')` for the process group.
 - `Promise.race([on('exit'), setTimeout(KILL_GRACE_MS = 10000)])`.
 - If still alive, `process.kill(-child.pid, 'SIGKILL')`.
+- Note: `xcodebuild` catches SIGTERM and runs its own cleanup; 10 s is a starting grace period, revisit if flake logs show truncated `xcresult`.
 
 2.3 In the MCP handler from Stage 1, set `ctx.signal = extra.signal`.
 
@@ -109,9 +122,10 @@ Set `liveProgressEnabled: true` and `streamingFragmentsEnabled: true` unconditio
 - Uses Node built-in `http.createServer` — no new npm dependency.
 - Routes POST/GET/DELETE on `/mcp` to `transport.handleRequest(req, res, body)`.
 
-3.3 Single-session enforcement (MVP):
-- A second `initialize` request from a new session-id while another is active responds with JSON-RPC error `-32000 "Server busy: another session active"`.
-- Documented as an intentional MVP constraint; multi-session support is a future enhancement requiring per-session session-store via AsyncLocalStorage keyed on `extra.sessionId` (`src/utils/session-store.ts:177` is a module-level singleton today and would need a per-session scope).
+3.3 Single-session posture (documented, not enforced in code):
+- The stated use case is one dev container ↔ one host MCP. Do not add code enforcement of "one active session at a time" — it is out-of-scope YAGNI for the actual user and adds a rejection path plus a negative smoke test that would exist only to test the rejection itself.
+- Documented in `docs/CONFIGURATION.md` and logged at server start: "single-session posture: `sessionStore` (`src/utils/session-store.ts:177`) is a module-level singleton, so concurrent MCP sessions will race on session defaults. Not currently supported."
+- Multi-session support is a future enhancement requiring per-session session-store via AsyncLocalStorage keyed on `extra.sessionId`. Left as a TODO comment adjacent to the singleton, with a link to this document.
 
 3.4 Adapt `src/server/mcp-lifecycle.ts`:
 - `attachProcessHandlers({ mode: 'http' | 'stdio' })`.
@@ -122,15 +136,16 @@ Set `liveProgressEnabled: true` and `streamingFragmentsEnabled: true` unconditio
 ```sh
 exec node "${PROJECT_ROOT}/build/cli.js" mcp --transport http --port "$PORT"
 ```
-PATH-enrichment and `XCODEBUILDMCP_ENABLED_WORKFLOWS` stay; the script no longer needs PID tracking or process-group signal propagation, since there is exactly one child.
+PATH-enrichment and `XCODEBUILDMCP_ENABLED_WORKFLOWS` stay. `exec` replaces the shell with `node`, so the existing `cleanup` trap (PID-file removal) will not run. Two decisions to make at implementation time:
+- **Preferred**: drop the PID file entirely. With `exec`, there is exactly one process; whoever started the script (systemd, launchd, tty) owns SIGTERM propagation directly. No external tooling in this repo reads `logs/mcp-server-${PORT}.pid`.
+- **Fallback**, only if an external consumer of that PID file surfaces: move creation and cleanup into the Node CLI in `registerMcpCommand` (write on transport ready, `process.on('exit', ...)` to remove).
 
-3.6 Move `scripts/patch-supergateway.sh` to `scripts/legacy/patch-supergateway.sh` and keep for one release as a rollback path. Remove all README/docs references.
+3.6 Move `scripts/patch-supergateway.sh` (already inert since Stage 1.7) to `scripts/legacy/patch-supergateway.sh` and keep for one release as a rollback path. Remove all README/docs references.
 
 3.7 Smoke test (`src/smoke-tests/__tests__/mcp-http-transport.test.ts`):
 - Use `Client` + `StreamableHTTPClientTransport` from `@modelcontextprotocol/sdk/client/streamableHttp.js`.
 - Bring the server up on an ephemeral port, run `initialize` → `tools/list` → `tools/call` with a progress handler.
 - Assert progress notifications arrive and the final result lands.
-- Negative test: a second concurrent `initialize` is rejected with `-32000`.
 
 ### Stage 4 — Documentation and changelog
 
@@ -158,7 +173,7 @@ When the experimental MCP Tasks API (`registerToolTask` in `@modelcontextprotoco
 
 Stages 1 and 2 are independent and parallelizable. Stage 3 is independent of 1 and 2 but should land after them so the HTTP smoke test exercises the full progress + cancellation path. Stage 4 ships last.
 
-Stage 1 alone is sufficient to unblock the full-suite `test_macos` run on the existing supergateway-based deployment: progress notifications keep `SessionAccessCounter` warm, so the 15-minute cleanup never fires.
+Stage 1 alone is sufficient to unblock the full-suite `test_macos` run on the existing supergateway-based deployment: progress notifications keep `SessionAccessCounter` warm, so the 15-minute cleanup never fires. `scripts/patch-supergateway.sh` becomes dead code from Stage 1.7 onward and is physically retired in Stage 3.6.
 
 Each stage ships as a separate PR. Stage 3 ships behind the `--transport http` flag; `stdio` remains the default so existing deployments are not affected.
 
@@ -169,10 +184,13 @@ Audit ran against this plan during design. Twelve risks were identified; eleven 
 ## References
 
 - `src/utils/tool-registry.ts:296-360` — current MCP handler registration (no `extra` argument, flags hardcoded false).
-- `src/utils/tool-execution-compat.ts` — fragment → MCP context adapter.
+- `src/utils/tool-execution-compat.ts` — fragment → MCP context adapter; also the host for the new `createFragmentToProgressBridge`.
+- `src/types/domain-fragments.ts` — `{ kind, fragment }` two-level fragment discrimination that the bridge maps over.
 - `src/utils/test-common.ts:185-193` — single-phase `xcodebuild test` invocation for macOS.
+- `src/utils/CommandExecutor.ts` — target for the new `signal` and `processGroup` fields on `CommandExecOptions`.
+- `src/utils/command.ts:68-89` — sole point of `spawn(...)` in the default executor.
 - `src/server/mcp-lifecycle.ts` — process-level lifecycle handlers.
 - `src/server/server.ts:53-65,92-96` — MCP server capabilities and stdio transport binding.
-- `src/utils/session-store.ts:177` — singleton session defaults store.
+- `src/utils/session-store.ts:177` — singleton session defaults store (single-session posture reason).
 - `scripts/serve-mcp.sh`, `scripts/patch-supergateway.sh` — current supergateway-based bridge.
 - `@modelcontextprotocol/sdk` v1.27.1 — provides `StreamableHTTPServerTransport`, `RequestHandlerExtra` (`signal`, `sendNotification`, `_meta`), and experimental Tasks API.
