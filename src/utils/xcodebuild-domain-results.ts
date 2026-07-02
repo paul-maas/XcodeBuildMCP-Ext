@@ -29,6 +29,9 @@ import { createStreamingExecutionContext } from './tool-execution-compat.js';
 import { isBuildErrorDiagnosticLine } from './xcodebuild-line-parsers.js';
 
 const MAX_DISCOVERED_TESTS = 6;
+// Cap the fully-enumerated `selected` list so a large selection (e.g. 1500+ tests)
+// cannot bloat structuredContent. The full count remains available in `discovered.total`.
+const MAX_SELECTED_TESTS = 100;
 
 interface LineStreamState {
   remainder: string;
@@ -202,7 +205,7 @@ function createTestSelectionInfo(preflight?: TestPreflightResult): TestSelection
     preflight.selectors.onlyTesting.length > 0 || preflight.selectors.skipTesting.length > 0;
 
   return {
-    ...(hasExplicitSelection ? { selected: discoveredItems } : {}),
+    ...(hasExplicitSelection ? { selected: discoveredItems.slice(0, MAX_SELECTED_TESTS) } : {}),
     ...(discoveryEvent
       ? {
           discovered: {
