@@ -67,7 +67,9 @@ describe('xcodebuild-domain-results', () => {
       rawLine: '/tmp/App.swift:8:17: error: type mismatch',
     });
     const parsedLine = '/tmp/App.swift:8:17: error: type mismatch';
-    const unparsedLine = '2026-04-23 12:00:00.000 xcodebuild[123:456] error: IDE operation failed';
+    // A diagnostic-looking line that is not one of the structured forms and is not
+    // os_log/runtime output (which is now excluded from build-error classification).
+    const unparsedLine = 'clang: error: linker command failed with exit code 1';
 
     const result = createBuildDomainResult({
       started: createStartedPipelineWithState(runState.finalize(false, 1000)),

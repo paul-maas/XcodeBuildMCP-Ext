@@ -51,7 +51,18 @@ export interface ParsedBuildError {
 
 const BUILD_ERROR_DIAGNOSTIC_PATTERN = /(?:^|[\s:])(?:fatal error|error):\s*\S/iu;
 
+// Runtime console output (os_log / NSLog) captured from the app under test — and from
+// xcodebuild's own tooling — looks like "<optional timestamp> ProcessName[pid:tid] ...".
+// The compiler and linker never emit this shape, so such lines are not build diagnostics
+// even when they contain "error:". Without this guard they flood diagnostics.errors during
+// test runs (measured: 472 app log lines misclassified as errors in a single test result).
+const RUNTIME_LOG_PREFIX_PATTERN =
+  /^(?:\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[-+]\d{4})?\s+)?\S+\[\d+:\d+\]/u;
+
 export function isBuildErrorDiagnosticLine(line: string): boolean {
+  if (RUNTIME_LOG_PREFIX_PATTERN.test(line)) {
+    return false;
+  }
   return BUILD_ERROR_DIAGNOSTIC_PATTERN.test(line);
 }
 
