@@ -14,7 +14,6 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import * as Sentry from '@sentry/node';
 import { log } from '../utils/logger.ts';
 import { version } from '../version.ts';
 import { getServer, setServer } from './server-state.ts';
@@ -72,11 +71,7 @@ export function createServer(): McpServer {
   if (getServer()) {
     throw new Error('MCP server already initialized.');
   }
-  const baseServer = createBaseServerInstance();
-  const server = Sentry.wrapMcpServerWithSentry(baseServer, {
-    recordInputs: false,
-    recordOutputs: false,
-  });
+  const server = createBaseServerInstance();
 
   setServer(server);
 

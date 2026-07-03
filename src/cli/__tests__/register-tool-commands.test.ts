@@ -45,7 +45,6 @@ const baseRuntimeConfig: ResolvedRuntimeConfig = {
   enabledWorkflows: [],
   customWorkflows: {},
   debug: false,
-  sentryDisabled: false,
   experimentalWorkflowDiscovery: false,
   disableSessionDefaults: true,
   disableXcodeAutoSync: false,

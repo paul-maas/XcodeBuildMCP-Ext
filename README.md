@@ -332,7 +332,7 @@ For further information on installing skills, see: [docs/SKILLS.md](docs/SKILLS.
 
 ## Privacy
 
-XcodeBuildMCP uses Sentry for internal runtime error telemetry only. For details and opt-out instructions, see [docs/PRIVACY.md](docs/PRIVACY.md).
+XcodeBuildMCP collects no telemetry. Nothing is sent to any external service. For details, see [docs/PRIVACY.md](docs/PRIVACY.md).
 
 ## CLI
 

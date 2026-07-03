@@ -71,14 +71,12 @@ Fragment mapping uses the `{ kind, fragment }` two-level discrimination declared
 
 1.4 In the MCP handler in `tool-registry.ts`, when `ctx.sendProgress` is set: construct the bridge via `createFragmentToProgressBridge(ctx.sendProgress)` and wrap `ctx.emit` to call the bridge handler in addition to the existing `session.emit(fragment)`.
 
-1.5 Verify `Sentry.wrapMcpServerWithSentry` does not turn progress notifications into spans/transactions. If it does, add a span filter.
-
-1.6 Tests:
+1.5 Tests:
 - Unit (extend the existing `src/utils/__tests__/tool-execution-compat.test.ts` or equivalent): monotonicity, throttle, heartbeat lifecycle (starts on first fragment, cleared on finalize/abort), fragment filtering.
 - Integration: tool call without `progressToken` — `ctx.sendProgress` undefined — produces zero notifications.
 - `src/test-utils/test-helpers.ts` — new context fields default to undefined / no-op so existing tests stay green.
 
-1.7 Deactivation (not removal) of `scripts/patch-supergateway.sh`: with progress notifications flowing, the client's request timer never expires, so the late-send race the patch guards against no longer occurs. Mark the script as no longer required in a header comment but leave the file in place as a safety net. Physical retirement happens in Stage 3.6. Zero runtime change in Stage 1.
+1.6 Deactivation (not removal) of `scripts/patch-supergateway.sh`: with progress notifications flowing, the client's request timer never expires, so the late-send race the patch guards against no longer occurs. Mark the script as no longer required in a header comment but leave the file in place as a safety net. Physical retirement happens in Stage 3.6. Zero runtime change in Stage 1.
 
 ### Stage 2 — Layer A2: AbortSignal propagation
 
@@ -140,7 +138,7 @@ PATH-enrichment and `XCODEBUILDMCP_ENABLED_WORKFLOWS` stay. `exec` replaces the 
 - **Preferred**: drop the PID file entirely. With `exec`, there is exactly one process; whoever started the script (systemd, launchd, tty) owns SIGTERM propagation directly. No external tooling in this repo reads `logs/mcp-server-${PORT}.pid`.
 - **Fallback**, only if an external consumer of that PID file surfaces: move creation and cleanup into the Node CLI in `registerMcpCommand` (write on transport ready, `process.on('exit', ...)` to remove).
 
-3.6 Move `scripts/patch-supergateway.sh` (already inert since Stage 1.7) to `scripts/legacy/patch-supergateway.sh` and keep for one release as a rollback path. Remove all README/docs references.
+3.6 Move `scripts/patch-supergateway.sh` (already inert since Stage 1.6) to `scripts/legacy/patch-supergateway.sh` and keep for one release as a rollback path. Remove all README/docs references.
 
 3.7 Smoke test (`src/smoke-tests/__tests__/mcp-http-transport.test.ts`):
 - Use `Client` + `StreamableHTTPClientTransport` from `@modelcontextprotocol/sdk/client/streamableHttp.js`.
@@ -173,7 +171,7 @@ When the experimental MCP Tasks API (`registerToolTask` in `@modelcontextprotoco
 
 Stages 1 and 2 are independent and parallelizable. Stage 3 is independent of 1 and 2 but should land after them so the HTTP smoke test exercises the full progress + cancellation path. Stage 4 ships last.
 
-Stage 1 alone is sufficient to unblock the full-suite `test_macos` run on the existing supergateway-based deployment: progress notifications keep `SessionAccessCounter` warm, so the 15-minute cleanup never fires. `scripts/patch-supergateway.sh` becomes dead code from Stage 1.7 onward and is physically retired in Stage 3.6.
+Stage 1 alone is sufficient to unblock the full-suite `test_macos` run on the existing supergateway-based deployment: progress notifications keep `SessionAccessCounter` warm, so the 15-minute cleanup never fires. `scripts/patch-supergateway.sh` becomes dead code from Stage 1.6 onward and is physically retired in Stage 3.6.
 
 Each stage ships as a separate PR. Stage 3 ships behind the `--transport http` flag; `stdio` remains the default so existing deployments are not affected.
 

@@ -279,7 +279,7 @@ export function startDaemonServer(ctx: DaemonServerContext): net.Server {
           }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          log('error', `[Daemon] Internal error handling request: ${message}`, { sentry: true });
+          log('error', `[Daemon] Internal error handling request: ${message}`);
           return writeFrame(socket, {
             ...base,
             error: {

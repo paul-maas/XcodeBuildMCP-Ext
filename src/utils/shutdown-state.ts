@@ -7,7 +7,6 @@ interface StdioWriteTarget {
 }
 
 let stdioSuppressed = false;
-let sentryCaptureSealed = false;
 let originalStdoutWrite: WritableMethod | null = null;
 let originalStderrWrite: WritableMethod | null = null;
 
@@ -68,15 +67,6 @@ export function areProcessStdioWritesSuppressed(): boolean {
   return stdioSuppressed;
 }
 
-export function sealSentryCapture(): void {
-  sentryCaptureSealed = true;
-}
-
-export function isSentryCaptureSealed(): boolean {
-  return sentryCaptureSealed;
-}
-
 export function resetShutdownStateForTests(): void {
   restoreProcessStdioWritesForTests();
-  sentryCaptureSealed = false;
 }

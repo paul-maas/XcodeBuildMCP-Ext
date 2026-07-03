@@ -11,7 +11,6 @@ import { postProcessSession } from '../runtime/tool-invoker.ts';
 import type { PredicateContext } from '../visibility/predicate-types.ts';
 import { selectWorkflowsForMcp, isToolExposedForRuntime } from '../visibility/exposure.ts';
 import { getConfig } from './config-store.ts';
-import { recordInternalErrorMetric, recordToolInvocationMetric } from './sentry.ts';
 import type { ToolHandlerContext } from '../rendering/types.ts';
 import { createRenderSession } from '../rendering/render.ts';
 import { toStructuredEnvelope } from './structured-output-envelope.ts';
@@ -168,14 +167,6 @@ export function createCustomWorkflowsFromConfig(
   return { workflows, warnings };
 }
 
-function emitConfigWarningMetric(kind: 'unknown_workflow' | 'invalid_custom_workflow'): void {
-  recordInternalErrorMetric({
-    component: 'config/workflow-selection',
-    runtime: 'mcp',
-    errorKind: kind,
-  });
-}
-
 export function getRuntimeRegistration(): RuntimeToolInfo | null {
   if (registryState.tools.size === 0 && registryState.enabledWorkflows.size === 0) {
     return null;
@@ -216,7 +207,6 @@ export async function applyWorkflowSelectionFromManifest(
   const customSelection = createCustomWorkflowsFromConfig(manifest, ctx.config.customWorkflows);
   for (const warning of customSelection.warnings) {
     log('warning', warning);
-    emitConfigWarningMetric('invalid_custom_workflow');
   }
   const allWorkflows = [...manifest.workflows.values(), ...customSelection.workflows];
 
@@ -235,7 +225,6 @@ export async function applyWorkflowSelectionFromManifest(
       'warning',
       `[config] Ignoring unknown workflow(s): ${uniqueUnknownRequestedWorkflows.join(', ')}`,
     );
-    emitConfigWarningMetric('unknown_workflow');
   }
 
   const desiredToolNames = new Set<string>();
@@ -302,61 +291,34 @@ export async function applyWorkflowSelectionFromManifest(
             annotations: toolManifest.annotations,
           },
           async (args: unknown): Promise<ToolResponse> => {
-            const startedAt = Date.now();
-            try {
-              const session = createRenderSession('text');
-              const ctx: ToolHandlerContext = {
-                liveProgressEnabled: false,
-                streamingFragmentsEnabled: false,
-                emit: (fragment) => {
-                  session.emit(fragment);
-                },
-                attach: session.attach,
-              };
-              await toolModule.handler(args as Record<string, unknown>, ctx);
+            const session = createRenderSession('text');
+            const ctx: ToolHandlerContext = {
+              liveProgressEnabled: false,
+              streamingFragmentsEnabled: false,
+              emit: (fragment) => {
+                session.emit(fragment);
+              },
+              attach: session.attach,
+            };
+            await toolModule.handler(args as Record<string, unknown>, ctx);
 
-              if (ctx.structuredOutput) {
-                session.setStructuredOutput?.(ctx.structuredOutput);
-              }
-
-              const catalog = registryState.catalog;
-              const catalogTool = catalog?.getByMcpName(toolName);
-              if (catalog && catalogTool) {
-                postProcessSession({
-                  tool: catalogTool,
-                  session,
-                  ctx,
-                  catalog,
-                  runtime: 'mcp',
-                });
-              }
-
-              const response = sessionToToolResponse(session);
-
-              recordToolInvocationMetric({
-                toolName,
-                runtime: 'mcp',
-                transport: 'direct',
-                outcome: 'completed',
-                durationMs: Date.now() - startedAt,
-              });
-
-              return response;
-            } catch (error) {
-              recordInternalErrorMetric({
-                component: 'mcp-tool-registry',
-                runtime: 'mcp',
-                errorKind: error instanceof Error ? error.name || 'Error' : typeof error,
-              });
-              recordToolInvocationMetric({
-                toolName,
-                runtime: 'mcp',
-                transport: 'direct',
-                outcome: 'infra_error',
-                durationMs: Date.now() - startedAt,
-              });
-              throw error;
+            if (ctx.structuredOutput) {
+              session.setStructuredOutput?.(ctx.structuredOutput);
             }
+
+            const catalog = registryState.catalog;
+            const catalogTool = catalog?.getByMcpName(toolName);
+            if (catalog && catalogTool) {
+              postProcessSession({
+                tool: catalogTool,
+                session,
+                ctx,
+                catalog,
+                runtime: 'mcp',
+              });
+            }
+
+            return sessionToToolResponse(session);
           },
         );
         registryState.tools.set(toolName, registeredTool);

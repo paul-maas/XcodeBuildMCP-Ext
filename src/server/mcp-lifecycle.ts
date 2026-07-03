@@ -14,8 +14,6 @@ import { suppressProcessStdioWrites } from '../utils/shutdown-state.ts';
 
 export type McpStartupPhase =
   | 'initializing'
-  | 'hydrating-sentry-config'
-  | 'initializing-sentry'
   | 'creating-server'
   | 'bootstrapping-server'
   | 'starting-stdio-transport'

@@ -13,7 +13,6 @@ XcodeBuildMCP reads configuration from environment variables and/or a project co
 - [Debugging and logging](#debugging-and-logging)
 - [UI automation](#ui-automation)
 - [Templates](#templates)
-- [Telemetry](#telemetry)
 - [Quick reference](#quick-reference)
 
 ---
@@ -73,7 +72,6 @@ incrementalBuildsEnabled: false
 
 # Debugging
 debug: false
-sentryDisabled: false
 debuggerBackend: "dap"
 dapRequestTimeoutMs: 30000
 dapLogEvents: false
@@ -289,29 +287,6 @@ Default templates:
 
 ---
 
-## Telemetry
-
-By default, only internal XcodeBuildMCP runtime failures are sent to Sentry. User-domain errors (such as project build/test/config failures) are not sent. To disable telemetry entirely:
-
-```yaml
-sentryDisabled: true
-```
-
-You can also disable telemetry via environment variable:
-
-```bash
-XCODEBUILDMCP_SENTRY_DISABLED=true
-```
-
-See [PRIVACY.md](PRIVACY.md) for more information.
-
-Notes:
-- Sentry SDK logging is enabled for internal observability.
-- Only explicitly opted-in internal logs are forwarded to Sentry; standard console logs are not auto-forwarded.
-- Tool arguments and tool outputs are not captured by MCP wrapper telemetry (`recordInputs: false`, `recordOutputs: false`).
-
----
-
 ## Quick reference
 
 | Option | Type | Default |
@@ -324,7 +299,6 @@ Notes:
 | `sessionDefaults` | object | `{}` |
 | `incrementalBuildsEnabled` | boolean | `false` |
 | `debug` | boolean | `false` |
-| `sentryDisabled` | boolean | `false` |
 | `debuggerBackend` | string | `"dap"` |
 | `dapRequestTimeoutMs` | number | `30000` |
 | `dapLogEvents` | boolean | `false` |
@@ -370,7 +344,6 @@ Use env vars for flat bootstrap values such as startup workflow selection, proje
 | `disableXcodeAutoSync` | `XCODEBUILDMCP_DISABLE_XCODE_AUTO_SYNC` |
 | `incrementalBuildsEnabled` | `INCREMENTAL_BUILDS_ENABLED` |
 | `debug` | `XCODEBUILDMCP_DEBUG` |
-| `sentryDisabled` | `XCODEBUILDMCP_SENTRY_DISABLED` |
 | `debuggerBackend` | `XCODEBUILDMCP_DEBUGGER_BACKEND` |
 | `dapRequestTimeoutMs` | `XCODEBUILDMCP_DAP_REQUEST_TIMEOUT_MS` |
 | `dapLogEvents` | `XCODEBUILDMCP_DAP_LOG_EVENTS` |
@@ -438,5 +411,5 @@ That export is intended for MCP client bootstrap. It does not replace `config.ya
 
 - Session defaults: [SESSION_DEFAULTS.md](SESSION_DEFAULTS.md)
 - Tools reference: [TOOLS.md](TOOLS.md)
-- Privacy and telemetry: [PRIVACY.md](PRIVACY.md)
+- Privacy: [PRIVACY.md](PRIVACY.md)
 - Troubleshooting: [TROUBLESHOOTING.md](TROUBLESHOOTING.md)

@@ -13,7 +13,6 @@ describe('CLI session defaults', () => {
         enabledWorkflows: [],
         customWorkflows: {},
         debug: false,
-        sentryDisabled: false,
         experimentalWorkflowDiscovery: false,
         disableSessionDefaults: true,
         disableXcodeAutoSync: false,

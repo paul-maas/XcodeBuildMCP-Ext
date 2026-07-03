@@ -52,7 +52,6 @@ export type PersistProjectConfigPatchOptions = {
   patch: {
     enabledWorkflows?: string[];
     debug?: boolean;
-    sentryDisabled?: boolean;
     experimentalWorkflowDiscovery?: boolean;
     disableSessionDefaults?: boolean;
     sessionDefaults?: Partial<SessionDefaults>;
@@ -415,7 +414,6 @@ export async function persistProjectConfigPatch(
 
   const topLevelPatch = removeUndefined({
     debug: options.patch.debug,
-    sentryDisabled: options.patch.sentryDisabled,
     experimentalWorkflowDiscovery: options.patch.experimentalWorkflowDiscovery,
     disableSessionDefaults: options.patch.disableSessionDefaults,
   });

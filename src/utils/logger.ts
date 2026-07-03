@@ -10,7 +10,6 @@
  * - Directing all logs to stderr to avoid MCP protocol interference
  * - Supporting different log levels (info, warning, error, debug)
  * - Providing a simple, consistent logging interface throughout the application
- * - Sending error-level logs to Sentry for monitoring and alerting
  *
  * While intentionally minimal, this logger provides the essential functionality
  * needed for operational monitoring and debugging throughout the application.
@@ -18,19 +17,7 @@
  */
 
 import { createWriteStream, type WriteStream } from 'node:fs';
-import { createRequire } from 'node:module';
-import { resolve } from 'node:path';
-import { areProcessStdioWritesSuppressed, isSentryCaptureSealed } from './shutdown-state.ts';
-
-function isSentryDisabledFromEnv(): boolean {
-  return (
-    process.env.SENTRY_DISABLED === 'true' || process.env.XCODEBUILDMCP_SENTRY_DISABLED === 'true'
-  );
-}
-
-function isSentryEnabled(): boolean {
-  return !isSentryDisabledFromEnv();
-}
+import { areProcessStdioWritesSuppressed } from './shutdown-state.ts';
 
 // Log levels in order of severity (lower number = more severe)
 const LOG_LEVELS = {
@@ -47,17 +34,6 @@ const LOG_LEVELS = {
 
 export type LogLevel = keyof typeof LOG_LEVELS;
 
-/**
- * Optional context for logging to control Sentry capture
- */
-export interface LogContext {
-  sentry?: boolean;
-}
-
-export function __shouldCaptureToSentryForTests(context?: LogContext): boolean {
-  return context?.sentry === true && !isSentryCaptureSealed();
-}
-
 // Client-requested log level ("none" means no output unless explicitly enabled)
 let clientLogLevel: LogLevel = 'none';
 
@@ -70,65 +46,6 @@ function isTestEnv(): boolean {
     process.env.NODE_ENV === 'test' ||
     process.env.XCODEBUILDMCP_SILENCE_LOGS === 'true'
   );
-}
-
-type SentryModule = typeof import('@sentry/node');
-type SentryLogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
-
-const require = createRequire(
-  typeof __filename === 'string' ? __filename : resolve(process.cwd(), 'package.json'),
-);
-let cachedSentry: SentryModule | null = null;
-
-function loadSentrySync(): SentryModule | null {
-  if (!isSentryEnabled() || isTestEnv()) {
-    return null;
-  }
-  if (cachedSentry) {
-    return cachedSentry;
-  }
-  try {
-    cachedSentry = require('@sentry/node') as SentryModule;
-    return cachedSentry;
-  } catch {
-    return null;
-  }
-}
-
-function withSentry(cb: (s: SentryModule) => void): void {
-  const s = loadSentrySync();
-  if (!s) {
-    return;
-  }
-  try {
-    cb(s);
-  } catch {
-    // Avoid throwing inside logger
-  }
-}
-
-function mapLogLevelToSentry(level: string): SentryLogLevel {
-  switch (level.toLowerCase()) {
-    case 'emergency':
-    case 'alert':
-      return 'fatal';
-    case 'critical':
-    case 'error':
-      return 'error';
-    case 'warn':
-      return 'warn';
-    case 'debug':
-      return 'debug';
-    case 'notice':
-    case 'info':
-      return 'info';
-    default:
-      return 'info';
-  }
-}
-
-export function __mapLogLevelToSentryForTests(level: string): SentryLogLevel {
-  return mapLogLevelToSentry(level);
 }
 
 /**
@@ -245,25 +162,10 @@ function shouldLog(level: string): boolean {
  * Log a message with the specified level
  * @param level The log level (emergency, alert, critical, error, warning, notice, info, debug)
  * @param message The message to log
- * @param context Optional context to control Sentry capture and other behavior
  */
-export function log(level: string, message: string, context?: LogContext): void {
+export function log(level: string, message: string): void {
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] [${level.toUpperCase()}] ${message}`;
-
-  const captureToSentry = isSentryEnabled() && __shouldCaptureToSentryForTests(context);
-
-  if (captureToSentry) {
-    withSentry((s) => {
-      const sentryLevel = mapLogLevelToSentry(level);
-      const loggerMethod = s.logger?.[sentryLevel];
-      if (typeof loggerMethod === 'function') {
-        loggerMethod(message);
-        return;
-      }
-      s.captureMessage(logMessage);
-    });
-  }
 
   if (logFileStream && clientLogLevel !== 'none') {
     try {

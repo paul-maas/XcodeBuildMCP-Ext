@@ -13,6 +13,10 @@
 - Added `xcodebuildmcp.output.command-result` structured output schema shared by all build-tools
 - Added `CommandResultDomainResult` type to domain results union
 
+### Removed
+
+- Removed all Sentry error telemetry and internal usage metrics. XcodeBuildMCP no longer collects or transmits any telemetry: the `@sentry/node` dependency, the Sentry instrumentation and MCP server wrapper, the `{ sentry: true }` log-forwarding path, and the `sentryDisabled` config option / `XCODEBUILDMCP_SENTRY_DISABLED` environment variable have all been removed. See [docs/PRIVACY.md](docs/PRIVACY.md).
+
 ## [2.3.2]
 
 ### Fixed

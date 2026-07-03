@@ -38,16 +38,6 @@
           "default": ""
         },
         {
-          "name": "XCODEBUILDMCP_SENTRY_DISABLED",
-          "description": "Disable Sentry error reporting (preferred flag).",
-          "format": "boolean",
-          "default": "false",
-          "choices": [
-            "true",
-            "false"
-          ]
-        },
-        {
           "name": "XCODEBUILDMCP_DEBUG",
           "description": "Enable verbose debug logging from the server.",
           "format": "boolean",

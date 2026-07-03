@@ -15,7 +15,6 @@ export type RuntimeConfigOverrides = Partial<{
   enabledWorkflows: string[];
   customWorkflows: Record<string, string[]>;
   debug: boolean;
-  sentryDisabled: boolean;
   experimentalWorkflowDiscovery: boolean;
   disableSessionDefaults: boolean;
   disableXcodeAutoSync: boolean;
@@ -39,7 +38,6 @@ export type ResolvedRuntimeConfig = {
   enabledWorkflows: string[];
   customWorkflows: Record<string, string[]>;
   debug: boolean;
-  sentryDisabled: boolean;
   experimentalWorkflowDiscovery: boolean;
   disableSessionDefaults: boolean;
   disableXcodeAutoSync: boolean;
@@ -73,7 +71,6 @@ const DEFAULT_CONFIG: ResolvedRuntimeConfig = {
   enabledWorkflows: [],
   customWorkflows: {},
   debug: false,
-  sentryDisabled: false,
   experimentalWorkflowDiscovery: false,
   disableSessionDefaults: false,
   disableXcodeAutoSync: false,
@@ -174,7 +171,6 @@ function readEnvConfig(env: NodeJS.ProcessEnv): RuntimeConfigOverrides {
   );
 
   setIfDefined(config, 'debug', parseBoolean(env.XCODEBUILDMCP_DEBUG));
-  setIfDefined(config, 'sentryDisabled', parseBoolean(env.XCODEBUILDMCP_SENTRY_DISABLED));
 
   setIfDefined(
     config,
@@ -453,13 +449,6 @@ function resolveConfig(opts: {
       envConfig,
       fallback: DEFAULT_CONFIG.debug,
     }),
-    sentryDisabled: resolveFromLayers({
-      key: 'sentryDisabled',
-      overrides: opts.overrides,
-      fileConfig: opts.fileConfig,
-      envConfig,
-      fallback: DEFAULT_CONFIG.sentryDisabled,
-    }),
     experimentalWorkflowDiscovery: resolveFromLayers({
       key: 'experimentalWorkflowDiscovery',
       overrides: opts.overrides,
@@ -596,13 +585,11 @@ export async function initConfigStore(opts: {
       const errorMessage =
         result.error instanceof Error ? result.error.message : String(result.error);
       log('warn', `Failed to read or parse project config at ${result.path}. ${errorMessage}`);
-      log('warn', '[infra/config-store] project config read/parse failed', { sentry: true });
+      log('warn', '[infra/config-store] project config read/parse failed');
     }
   } catch (error) {
     log('warn', `Failed to load project config from ${opts.cwd}. ${error}`);
-    log('warn', `[infra/config-store] project config load threw (${getErrorKind(error)})`, {
-      sentry: true,
-    });
+    log('warn', `[infra/config-store] project config load threw (${getErrorKind(error)})`);
   }
 
   storeState.fileConfig = fileConfig;

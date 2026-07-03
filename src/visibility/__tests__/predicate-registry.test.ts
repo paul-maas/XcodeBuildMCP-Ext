@@ -13,7 +13,6 @@ function createDefaultConfig(
 ): ResolvedRuntimeConfig {
   return {
     debug: false,
-    sentryDisabled: false,
     enabledWorkflows: [],
     customWorkflows: {},
     experimentalWorkflowDiscovery: false,
