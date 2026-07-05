@@ -28,6 +28,26 @@ The same handler also ignores the second `extra: RequestHandlerExtra` callback a
 
 `test_macos` invokes `xcodebuild test` as a single-phase command (`src/utils/test-common.ts:185-193`). The full MCP request is held open for the whole test run, with no out-of-band channel for progress, cancellation, or partial results.
 
+### Layer D — unbounded response size (fixed)
+
+Separate from the transport, the tool's `structuredContent` was unbounded and grew with test count. Measured on a real run: `tests.selected` serialized the full resolved selector list (1540 entries = 157 KB for a 28-test result), and `diagnostics.errors` captured app/xcodebuild os_log lines misclassified as build errors (472 entries = 78 KB structured + ~70 KB duplicated into the rendered text). Both are now fixed:
+- `tests.selected` capped at `MAX_SELECTED_TESTS = 100`, count preserved in `discovered.total` (`src/utils/xcodebuild-domain-results.ts`, commit `5a648d6b`).
+- `isBuildErrorDiagnosticLine` rejects `Process[pid:tid]` runtime-log lines before the loose `error:` match (`src/utils/xcodebuild-line-parsers.ts`, commit `28390526`).
+
+Necessary but **not sufficient**, and not yet validated end-to-end: a silent run dies (Layer A) before it can reach the response phase, so the shrunk response is never produced.
+
+## Empirical validation findings (2026-07)
+
+A live container→host run confirmed the layer priority:
+
+1. **Layer A is the proximate blocker.** The client idle-watchdog `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` (unit **milliseconds**, default **30000 = 30 s**, `0` disables) aborts any MCP tool call that emits no notification for 30 s. With no server-side progress, every silent `test_macos` dies at 30 s. Disabling it let the run survive to ~165 s, where a **second, transport-layer idle drop** fired (`"transport dropped mid-call"`), attributed to the container→host:9090 path (Docker Desktop NAT and/or the container firewall) closing the silent SSE stream. Disabling client timeouts is whack-a-mole; only server-side progress (Layer A) keeps *all* idle timers warm.
+2. **Layer A2 confirmed.** When the session died, the `xcodebuild` subtree was orphaned on the host (reparented to launchd), plus a leaked test-host app and MCP child — exactly the cancellation gap A2 addresses.
+3. **Earlier "300 s idle" framing was wrong.** The real client default is 30 s (ms). The host-side Node `requestTimeout` (default 300 s) governs request receipt, not the response, and never fired.
+
+### Separate issue — helper daemon code-signing race (not a transport problem)
+
+The specific validation run was pathologically silent (258 s) because the app-under-test hung on its privileged helper. Root cause (from `launchd`/kernel logs): the helper `LaunchDaemon` binary in the shared `~/Library/Developer/XcodeBuildMCP/DerivedData` was rewritten by a second incremental `test_macos` run without refreshing its ad-hoc signature (`cs_mtime != mtime`, delta = the 17 min between the two runs), so the kernel's `AppleSystemPolicy`/AMFI rejected the demand-launch (`load code signature error 2`). launchd retried and the daemon came up ~10 s later, but the app's `HelperManager` watchdog (~6 s) had already given up. Mitigation: clean the MCP DerivedData before a run, or avoid back-to-back `test_macos` against the same DerivedData. Orthogonal to the transport work, but it is what exposed the transport idle timeout in that run.
+
 ## Conceptual solution
 
 Three remediations, each addressing one layer; layers A1 + A2 alone close the immediate failure mode.
@@ -171,7 +191,7 @@ When the experimental MCP Tasks API (`registerToolTask` in `@modelcontextprotoco
 
 Stages 1 and 2 are independent and parallelizable. Stage 3 is independent of 1 and 2 but should land after them so the HTTP smoke test exercises the full progress + cancellation path. Stage 4 ships last.
 
-Stage 1 alone is sufficient to unblock the full-suite `test_macos` run on the existing supergateway-based deployment: progress notifications keep `SessionAccessCounter` warm, so the 15-minute cleanup never fires. `scripts/patch-supergateway.sh` becomes dead code from Stage 1.6 onward and is physically retired in Stage 3.6.
+Stage 1 (progress notifications) is the fix that unblocks the full-suite `test_macos` run — confirmed empirically (see "Empirical validation findings"). The proximate killers are silence-driven idle timeouts — the client `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` at 30 s and a ~165 s transport-layer idle drop on the container→host path — **not** supergateway's 15-minute `SessionAccessCounter` cleanup. Server-side progress keeps the SSE stream warm so none of these idle timers fire. It also lets a run reach the response phase, which is the only way the Layer D size fix (already shipped) gets exercised end-to-end. `scripts/patch-supergateway.sh` becomes dead code from Stage 1.6 onward and is physically retired in Stage 3.6.
 
 Each stage ships as a separate PR. Stage 3 ships behind the `--transport http` flag; `stdio` remains the default so existing deployments are not affected.
 
