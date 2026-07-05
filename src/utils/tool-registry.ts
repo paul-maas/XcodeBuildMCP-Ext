@@ -15,6 +15,7 @@ import type { ToolHandlerContext } from '../rendering/types.ts';
 import { createRenderSession } from '../rendering/render.ts';
 import { toStructuredEnvelope } from './structured-output-envelope.ts';
 import { getMcpOutputSchemaForRegistration } from '../core/structured-output-schema.ts';
+import { startMcpProgressPump } from './tool-execution-compat.ts';
 
 function sessionToToolResponse(session: ReturnType<typeof createRenderSession>): ToolResponse {
   const text = session.finalize();
@@ -290,8 +291,22 @@ export async function applyWorkflowSelectionFromManifest(
             ...(outputSchema ? { outputSchema } : {}),
             annotations: toolManifest.annotations,
           },
-          async (args: unknown): Promise<ToolResponse> => {
+          async (args: unknown, extra): Promise<ToolResponse> => {
             const session = createRenderSession('text');
+            const progressToken = extra._meta?.progressToken;
+            const sendProgress =
+              progressToken !== undefined
+                ? (params: { progress: number; total?: number; message?: string }): void => {
+                    void extra
+                      .sendNotification({
+                        method: 'notifications/progress',
+                        params: { progressToken, ...params },
+                      })
+                      .catch((error) => {
+                        log('warn', `Progress notification failed: ${String(error)}`);
+                      });
+                  }
+                : undefined;
             const ctx: ToolHandlerContext = {
               liveProgressEnabled: false,
               streamingFragmentsEnabled: false,
@@ -299,26 +314,36 @@ export async function applyWorkflowSelectionFromManifest(
                 session.emit(fragment);
               },
               attach: session.attach,
+              sendProgress,
+              signal: extra.signal,
             };
-            await toolModule.handler(args as Record<string, unknown>, ctx);
+            // Keep the transport idle timers warm during long, silent tool calls
+            // (see docs/MCP_HTTP_TRANSPORT_PLAN.md — Layer A). No-op when the client
+            // did not request progress.
+            const progressPump = sendProgress ? startMcpProgressPump(sendProgress) : undefined;
+            try {
+              await toolModule.handler(args as Record<string, unknown>, ctx);
 
-            if (ctx.structuredOutput) {
-              session.setStructuredOutput?.(ctx.structuredOutput);
+              if (ctx.structuredOutput) {
+                session.setStructuredOutput?.(ctx.structuredOutput);
+              }
+
+              const catalog = registryState.catalog;
+              const catalogTool = catalog?.getByMcpName(toolName);
+              if (catalog && catalogTool) {
+                postProcessSession({
+                  tool: catalogTool,
+                  session,
+                  ctx,
+                  catalog,
+                  runtime: 'mcp',
+                });
+              }
+
+              return sessionToToolResponse(session);
+            } finally {
+              progressPump?.stop();
             }
-
-            const catalog = registryState.catalog;
-            const catalogTool = catalog?.getByMcpName(toolName);
-            if (catalog && catalogTool) {
-              postProcessSession({
-                tool: catalogTool,
-                session,
-                ctx,
-                catalog,
-                runtime: 'mcp',
-              });
-            }
-
-            return sessionToToolResponse(session);
           },
         );
         registryState.tools.set(toolName, registeredTool);
