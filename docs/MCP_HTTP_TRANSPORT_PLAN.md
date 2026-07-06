@@ -4,7 +4,7 @@
 
 Running a full `test_macos` suite against the host MCP server from a Linux dev container failed: the run either got killed early or completed but never delivered its result. Per-class scoped runs worked (short enough to dodge the timeouts).
 
-The current stack is `Docker → HTTP → supergateway (--stateful, --sessionTimeout 900000) → stdio → node build/cli.js mcp → xcodebuild test`. See `scripts/serve-mcp.sh` and `scripts/patch-supergateway.sh`.
+The stack at diagnosis time was `Docker → HTTP → supergateway (--stateful, --sessionTimeout 900000) → stdio → node build/cli.js mcp → xcodebuild test`. Since Stage 3 it is `Docker → HTTP → node build/cli.js mcp --transport http → xcodebuild test` (see `scripts/serve-mcp.sh`).
 
 ## Status (as of 2026-07)
 
@@ -12,12 +12,12 @@ The full monolithic `test_macos` run now completes and delivers its structured r
 
 - ✅ **Layer D — response size** (commits `5a648d6b`, `28390526`): capped `tests.selected`; stopped misclassifying os_log as build errors. Details under "Layer D" below.
 - ✅ **Layer A1 — progress heartbeat** (commit `29e7f077`): server emits `notifications/progress` so the transport's idle timers stay warm. Details in Stage 1.
-- ✅ **Interim supergateway progress-routing patch** (commit `adbf92e9`): routes progress to the request's stream so the response connection survives. Details under "Interim supergateway patch". **This is a workaround, not the fix.**
+- ✅ **Interim supergateway progress-routing patch** (commit `adbf92e9`): routes progress to the request's stream so the response connection survives. Details under "Interim supergateway patch". **Superseded by Stage 3.**
+- ✅ **Stage 3 — Layer B** (2026-07-06): native `StreamableHTTPServerTransport` via `mcp --transport http` (`src/server/start-mcp-http-server.ts`); supergateway removed from `scripts/serve-mcp.sh` and `scripts/patch-supergateway.sh` moved to `scripts/legacy/`. Implementation notes under "Stage 3" below.
 
 Remaining (this document):
 
-- ⏳ **Stage 3 — Layer B** (native `StreamableHTTPServerTransport`, remove supergateway): the real root-cause fix. Deletes the need for both supergateway patches. **Next major work; best done in a fresh context using this doc as the spec.**
-- ⏳ **Stage 2 — Layer A2** (AbortSignal → `xcodebuild` process-group kill): reordered to **after** Stage 3. It is no longer urgent (the heartbeat means runs complete instead of dying mid-run, so idle-drop orphans no longer occur), and it is cleaner to build on Layer B's well-defined cancellation signal than on supergateway's `child.kill()` semantics.
+- ⏳ **Stage 2 — Layer A2** (AbortSignal → `xcodebuild` process-group kill): reordered to **after** Stage 3. It is no longer urgent (the heartbeat means runs complete instead of dying mid-run, so idle-drop orphans no longer occur), and it is cleaner to build on Layer B's well-defined cancellation signal (`ctx.signal` is already populated from `extra.signal` in both transports) than on supergateway's `child.kill()` semantics.
 
 ## Root cause (three independent layers)
 
@@ -74,7 +74,7 @@ Remediations by layer. In practice a working end-to-end path today needs **Layer
 | D | Cap `tests.selected`; keep os_log out of `diagnostics.errors` | Response stays small (~13 KB, `errors: 0`) | ✅ done |
 | A1 | `extra.sendNotification` → periodic `notifications/progress` heartbeat | Client idle-watchdog (30 s) and transport idle (~165 s) stay warm; run survives to completion | ✅ done |
 | — | Route progress with `relatedRequestId` so it rides the request's response stream | Completed result is actually deliverable (not lost on a dead idle connection) | ✅ interim patch; free under Layer B |
-| B | Replace supergateway with native `StreamableHTTPServerTransport` | Removes "any HTTP error kills the child" **and** the request↔notification association loss; deletes both supergateway patches | ⏳ Stage 3 |
+| B | Replace supergateway with native `StreamableHTTPServerTransport` | Removes "any HTTP error kills the child" **and** the request↔notification association loss; deletes both supergateway patches | ✅ done |
 | A2 | Propagate `extra.signal` → `xcodebuild` process-group kill | Cancellation cleanly stops the run; no orphaned `xcodebuild` | ⏳ after Stage 3 |
 | C (future) | Migrate long-running tools to `registerToolTask` (experimental Tasks API) | HTTP requests become short status pings; long execution lives server-side | later |
 
@@ -104,7 +104,7 @@ Shipped as a simple heartbeat, deliberately **simpler** than the fragment-mappin
 1. **Async send** (pre-existing): wrap `transport.send(jsonMsg)` in `.catch()` so rejected sends don't crash the process.
 2. **Progress routing** (new): forward `notifications/progress` with `relatedRequestId = params.progressToken`, so the heartbeat lands on the request's POST response stream instead of the standalone GET stream. Without it the response connection is idle-dropped and the result is undeliverable (findings 4–5).
 
-Both are **interim workarounds**. Stage 3 (native transport) removes supergateway and deletes this script — a native `StreamableHTTPServerTransport` associates request-scoped notifications with their stream automatically, so neither patch is needed.
+Both were **interim workarounds**. Stage 3 (native transport) removed supergateway — a native `StreamableHTTPServerTransport` associates request-scoped notifications with their stream automatically, so neither patch is needed. The script lives in `scripts/legacy/patch-supergateway.sh` for one release as a rollback path.
 
 ### Stage 2 — Layer A2: AbortSignal propagation
 
@@ -135,7 +135,15 @@ Both options are opt-in only — never propagated to long-lived sessions:
 - Abort with grandchildren → entire process group dies.
 - Log-capture session using the same executor without `signal` is not killed (regression guard).
 
-### Stage 3 — Layer B: native `StreamableHTTPServerTransport`
+### Stage 3 — Layer B: native `StreamableHTTPServerTransport` — ✅ DONE (2026-07-06)
+
+Shipped as specced in 3.1–3.7 below, with these implementation findings:
+
+- **Session takeover, not silent racing (3.3).** SDK 1.27.1 `Protocol.connect` throws if a transport is already bound, so the shared `McpServer` cannot hold two live sessions. `src/server/start-mcp-http-server.ts` therefore closes the previous session's transport when a new `initialize` arrives ("last client wins"). This is still the documented single-session posture — no rejection path was added; a reconnecting client (the practical flow) works by construction.
+- **CLI fast path (3.1).** `src/cli.ts` routes a bare `mcp` invocation around yargs for startup latency; that path ignored command flags entirely. Flagged invocations (`mcp --transport http ...`) now go through the lightweight yargs app (same pattern as `init`/`setup`/`upgrade`); a bare `mcp` keeps the zero-yargs fast path.
+- **PID file (3.5).** Took the preferred option (no PID handling in `serve-mcp.sh`). Correction to the claim below: `scripts/ensure-mcp-server.sh` does read/write `logs/mcp-server-${PORT}.pid`, but it is self-sufficient — it creates the file from `$!`, detects staleness with `kill -0`, and removes it itself. With `exec`, the PID it records *is* the node process, so its TERM handling got strictly more direct.
+- **Idle timeout semantics (3.1/3.2).** `--session-timeout-ms` arms per session only while no HTTP request is open, so a long-running tool call (held-open POST response stream, or the standalone GET stream) can never be reaped mid-run — avoiding the supergateway `SessionAccessCounter` failure class.
+- **Smoke test (3.7).** `src/smoke-tests/__tests__/mcp-http-transport.test.ts`, via a new `transport: 'http'` option on `createMcpTestHarness` (ephemeral port, real `StreamableHTTPClientTransport`). Asserts session establishment, `tools/list`, and a `tools/call` that receives ≥1 `notifications/progress` before its result.
 
 3.1 Add CLI flags to the `mcp` command:
 - `--transport <stdio|http>` (default `stdio`)
@@ -215,8 +223,9 @@ Audit ran against this plan during design. Twelve risks were identified; eleven 
 - `src/utils/test-common.ts:185-193` — single-phase `xcodebuild test` invocation for macOS.
 - `src/utils/CommandExecutor.ts` — target for the new `signal` and `processGroup` fields on `CommandExecOptions`.
 - `src/utils/command.ts:68-89` — sole point of `spawn(...)` in the default executor.
-- `src/server/mcp-lifecycle.ts` — process-level lifecycle handlers.
+- `src/server/mcp-lifecycle.ts` — process-level lifecycle handlers; `attachProcessHandlers({ mode })` skips stdio-disconnect handlers in http mode.
 - `src/server/server.ts:53-65,92-96` — MCP server capabilities and stdio transport binding.
-- `src/utils/session-store.ts:177` — singleton session defaults store (single-session posture reason).
-- `scripts/serve-mcp.sh`, `scripts/patch-supergateway.sh` — current supergateway-based bridge; the patch script applies two edits (async-send + progress routing via `relatedRequestId`), both retired by Stage 3.
+- `src/server/start-mcp-http-server.ts` — native Streamable HTTP transport host (Stage 3).
+- `src/utils/session-store.ts` — singleton session defaults store (single-session posture reason; TODO comment at the singleton).
+- `scripts/serve-mcp.sh` — direct `mcp --transport http` launcher; `scripts/legacy/patch-supergateway.sh` — retired supergateway patches (async-send + progress routing via `relatedRequestId`), kept one release for rollback.
 - `@modelcontextprotocol/sdk` v1.27.1 — provides `StreamableHTTPServerTransport`, `RequestHandlerExtra` (`signal`, `sendNotification`, `_meta`), and experimental Tasks API.

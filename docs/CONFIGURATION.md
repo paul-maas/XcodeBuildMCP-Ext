@@ -14,6 +14,7 @@ XcodeBuildMCP reads configuration from environment variables and/or a project co
 - [UI automation](#ui-automation)
 - [Templates](#templates)
 - [Quick reference](#quick-reference)
+- [HTTP transport for Docker dev environments](#http-transport-for-docker-dev-environments)
 
 ---
 
@@ -404,6 +405,49 @@ xcodebuildmcp setup --format mcp-json
 ```
 
 That export is intended for MCP client bootstrap. It does not replace `config.yaml` as the canonical project configuration.
+
+---
+
+## HTTP transport for Docker dev environments
+
+By default the MCP server speaks stdio and is spawned directly by the MCP client. When the client runs somewhere that cannot spawn the server — typically an agent inside a Docker dev container that needs the Xcode toolchain on the host — serve MCP over HTTP instead:
+
+```bash
+xcodebuildmcp mcp --transport http --port 9090
+```
+
+Flags (all optional):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--transport` | `stdio` | `stdio` or `http`. |
+| `--port` | `9090` | Port to listen on; `0` picks an ephemeral port. |
+| `--host` | `127.0.0.1` | Bind address. Use `0.0.0.0` to accept non-local connections. |
+| `--session-timeout-ms` | `0` (disabled) | Close a session after this long with no open or incoming request. |
+
+The server uses the MCP Streamable HTTP transport natively (endpoint path `/mcp`), so progress notifications ride the originating request's response stream and long tool calls survive idle-timeout-prone network paths (Docker Desktop NAT, container firewalls).
+
+For a host-side launcher that sets up PATH and workflows, use the repo script:
+
+```bash
+./scripts/serve-mcp.sh --port 9090
+```
+
+Container-side client config (`.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "xcode": {
+      "type": "http",
+      "url": "http://host.docker.internal:9090/mcp"
+    }
+  }
+}
+```
+
+> [!IMPORTANT]
+> **Single-session posture.** The server keeps session defaults in a process-wide store, so it supports one active MCP session at a time: a new `initialize` request replaces the previous session ("last client wins"). This fits the intended one-container ↔ one-host setup; concurrent clients against the same server are not supported. See `docs/MCP_HTTP_TRANSPORT_PLAN.md` for background and the multi-session direction.
 
 ---
 

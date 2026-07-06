@@ -12,10 +12,17 @@
 - Added `pfctl_anchor` tool for read-only PF firewall anchor inspection
 - Added `xcodebuildmcp.output.command-result` structured output schema shared by all build-tools
 - Added `CommandResultDomainResult` type to domain results union
+- Added native HTTP transport for the MCP server (`mcp --transport http`, with `--port`, `--host`, and `--session-timeout-ms`) using the MCP SDK's `StreamableHTTPServerTransport`; stdio remains the default transport
+- Added progress notifications (`notifications/progress` heartbeat) for long-running build and test tools so idle-timeout-prone transports stay alive for the duration of the call
+
+### Changed
+
+- `scripts/serve-mcp.sh` launches the MCP server directly via the native Streamable HTTP transport instead of through a supergateway bridge
 
 ### Removed
 
 - Removed all Sentry error telemetry and internal usage metrics. XcodeBuildMCP no longer collects or transmits any telemetry: the `@sentry/node` dependency, the Sentry instrumentation and MCP server wrapper, the `{ sentry: true }` log-forwarding path, and the `sentryDisabled` config option / `XCODEBUILDMCP_SENTRY_DISABLED` environment variable have all been removed. See [docs/PRIVACY.md](docs/PRIVACY.md).
+- Removed the supergateway-based HTTP bridge; `scripts/patch-supergateway.sh` moved to `scripts/legacy/` for one release as a rollback path
 
 ## [2.3.2]
 
