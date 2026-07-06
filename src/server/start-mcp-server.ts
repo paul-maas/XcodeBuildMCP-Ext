@@ -14,14 +14,32 @@ import process from 'node:process';
 import { bootstrapServer } from './bootstrap.ts';
 import { createStartupProfiler, getStartupProfileNowMs } from './startup-profiler.ts';
 import { createMcpLifecycleCoordinator } from './mcp-lifecycle.ts';
+import type { McpTransportMode } from './mcp-lifecycle.ts';
 import { runMcpShutdown } from './mcp-shutdown.ts';
+import { startMcpHttpServer } from './start-mcp-http-server.ts';
+import type { McpHttpServerHandle } from './start-mcp-http-server.ts';
+import { toErrorMessage } from '../utils/errors.ts';
+
+export interface StartMcpServerOptions {
+  /** Transport to serve MCP over. Defaults to stdio. */
+  transport?: McpTransportMode;
+  /** Port to listen on (http transport only). Defaults to 9090; 0 picks an ephemeral port. */
+  port?: number;
+  /** Address to bind to (http transport only). Defaults to 127.0.0.1. */
+  host?: string;
+  /** Idle session timeout in milliseconds (http transport only). Defaults to 0 (disabled). */
+  sessionTimeoutMs?: number;
+}
 
 /**
  * Start the MCP server.
  * This function creates and bootstraps the server, sets up signal handlers
- * for graceful shutdown, and starts the server.
+ * for graceful shutdown, and starts the server on the requested transport.
  */
-export async function startMcpServer(): Promise<void> {
+export async function startMcpServer(options: StartMcpServerOptions = {}): Promise<void> {
+  const transportMode: McpTransportMode = options.transport ?? 'stdio';
+  let httpServerHandle: McpHttpServerHandle | null = null;
+
   const lifecycle = createMcpLifecycleCoordinator({
     onShutdown: async ({ reason, error, snapshot, server }) => {
       const transportMessages: Record<string, string> = {
@@ -39,12 +57,20 @@ export async function startMcpServer(): Promise<void> {
         server,
       });
 
+      // runMcpShutdown closed the McpServer (and with it the bound transport);
+      // now close any remaining session transports and the HTTP listener.
+      if (httpServerHandle) {
+        await httpServerHandle.close().catch((closeError: unknown) => {
+          log('warn', `HTTP server close failed: ${toErrorMessage(closeError)}`);
+        });
+      }
+
       lifecycle.detachProcessHandlers();
       process.exit(result.exitCode);
     },
   });
 
-  lifecycle.attachProcessHandlers();
+  lifecycle.attachProcessHandlers({ mode: transportMode });
 
   try {
     const profiler = createStartupProfiler('start-mcp-server');
@@ -65,9 +91,19 @@ export async function startMcpServer(): Promise<void> {
     profiler.mark('bootstrapServer', stageStartMs);
 
     stageStartMs = getStartupProfileNowMs();
-    lifecycle.markPhase('starting-stdio-transport');
-    await startServer(server);
-    profiler.mark('startServer', stageStartMs);
+    if (transportMode === 'http') {
+      lifecycle.markPhase('starting-http-transport');
+      httpServerHandle = await startMcpHttpServer(server, {
+        port: options.port ?? 9090,
+        host: options.host ?? '127.0.0.1',
+        sessionTimeoutMs: options.sessionTimeoutMs ?? 0,
+      });
+      profiler.mark('startHttpServer', stageStartMs);
+    } else {
+      lifecycle.markPhase('starting-stdio-transport');
+      await startServer(server);
+      profiler.mark('startServer', stageStartMs);
+    }
 
     lifecycle.markPhase('running');
     const startupSnapshot = await lifecycle.getSnapshot();

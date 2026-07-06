@@ -13,7 +13,7 @@ export type { FileSystemExecutor } from './FileSystemExecutor.ts';
 /**
  * Ensure common tool directories (homebrew, MacPorts, user-local) are on PATH
  * so spawned commands like xcodegen, create-dmg, etc. are found regardless of
- * how the MCP server process was launched (direct node, supergateway, Docker).
+ * how the MCP server process was launched (stdio client, HTTP transport, Docker).
  */
 const EXTRA_PATH_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', '/opt/local/bin'];
 const enrichedPath: string = (() => {

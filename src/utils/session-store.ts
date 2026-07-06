@@ -174,4 +174,9 @@ class SessionStore {
   }
 }
 
+// TODO: This module-level singleton means concurrent MCP sessions (http transport)
+// would race on session defaults; the HTTP server therefore runs a single-session
+// posture where a new initialize request replaces the previous session. Multi-session
+// support requires a per-session store via AsyncLocalStorage keyed on the MCP
+// sessionId (`extra.sessionId`). See docs/MCP_HTTP_TRANSPORT_PLAN.md (Stage 3.3).
 export const sessionStore = new SessionStore();

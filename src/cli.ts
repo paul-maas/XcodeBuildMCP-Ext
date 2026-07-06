@@ -4,6 +4,7 @@ import { buildCliToolCatalog } from './cli/cli-tool-catalog.ts';
 import { buildYargsApp } from './cli/yargs-app.ts';
 import { getSocketPath, getWorkspaceKey, resolveWorkspaceRoot } from './daemon/socket-path.ts';
 import { startMcpServer } from './server/start-mcp-server.ts';
+import { registerMcpCommand } from './cli/commands/mcp.ts';
 import { listCliWorkflowIdsFromManifest } from './runtime/tool-catalog.ts';
 import { coerceLogLevel, setLogLevel, type LogLevel } from './utils/logger.ts';
 
@@ -64,6 +65,12 @@ async function buildLightweightYargsApp(): Promise<ReturnType<typeof import('yar
     });
 }
 
+async function runMcpCommand(): Promise<void> {
+  const app = await buildLightweightYargsApp();
+  registerMcpCommand(app);
+  await app.parseAsync();
+}
+
 async function runInitCommand(): Promise<void> {
   const { registerInitCommand } = await import('./cli/commands/init.ts');
   const app = await buildLightweightYargsApp();
@@ -88,7 +95,15 @@ async function runUpgradeCommand(): Promise<void> {
 async function main(): Promise<void> {
   const earlyCommand = findTopLevelCommand(process.argv.slice(2));
   if (earlyCommand === 'mcp') {
-    await startMcpServer();
+    // Plain `mcp` keeps the zero-yargs fast path (MCP clients spawn this on
+    // every session); any additional argument (--transport, --help, ...) goes
+    // through the yargs command so the flags are actually parsed.
+    const hasExtraArgs = process.argv.slice(2).some((token) => token !== 'mcp');
+    if (hasExtraArgs) {
+      await runMcpCommand();
+    } else {
+      await startMcpServer();
+    }
     return;
   }
   if (earlyCommand === 'init') {

@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import type { ChildProcess } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { CommandExecutor, CommandResponse } from '../utils/CommandExecutor.ts';
 import {
   __setTestCommandExecutorOverride,
@@ -27,6 +28,8 @@ import {
 } from '../test-utils/mock-executors.ts';
 import { createServer } from '../server/server.ts';
 import { bootstrapServer } from '../server/bootstrap.ts';
+import { startMcpHttpServer } from '../server/start-mcp-http-server.ts';
+import type { McpHttpServerHandle } from '../server/start-mcp-http-server.ts';
 import { sessionStore } from '../utils/session-store.ts';
 import {
   __setTestDebuggerToolContextOverride,
@@ -47,6 +50,8 @@ export interface CapturedCommand {
 export interface McpTestHarness {
   client: Client;
   capturedCommands: CapturedCommand[];
+  /** Bound port of the HTTP server (set only when the harness uses the http transport). */
+  httpPort?: number;
   resetCapturedCommands(): void;
   cleanup(): Promise<void>;
 }
@@ -54,6 +59,8 @@ export interface McpTestHarness {
 export interface McpTestHarnessOptions {
   enabledWorkflows?: string[];
   commandResponses?: Record<string, { success: boolean; output: string }>;
+  /** Client↔server wiring: linked in-memory pair (default) or the native Streamable HTTP transport on an ephemeral port. */
+  transport?: 'in-memory' | 'http';
 }
 
 const defaultCommandResponse: CommandResponse = {
@@ -212,25 +219,47 @@ export async function createMcpTestHarness(opts?: McpTestHarnessOptions): Promis
     fileSystemExecutor: mockFs,
   });
 
-  // Create InMemoryTransport linked pair
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-
-  // Connect server to one end
-  await server.connect(serverTransport);
-
-  // Create and connect client to the other end
   const client = new Client({ name: 'e2e-test-client', version: '1.0.0' });
-  await client.connect(clientTransport);
+  let httpServerHandle: McpHttpServerHandle | null = null;
+
+  if (opts?.transport === 'http') {
+    // Native Streamable HTTP transport on an ephemeral port; the client's
+    // initialize request creates the session and connects the server.
+    httpServerHandle = await startMcpHttpServer(server, {
+      port: 0,
+      host: '127.0.0.1',
+      sessionTimeoutMs: 0,
+    });
+    try {
+      const clientTransport = new StreamableHTTPClientTransport(
+        new URL(`http://127.0.0.1:${httpServerHandle.port}/mcp`),
+      );
+      await client.connect(clientTransport);
+    } catch (error) {
+      // The handle is not returned on failure, so close it here or the open
+      // listener leaks past the test run.
+      await httpServerHandle.close();
+      throw error;
+    }
+  } else {
+    // Create InMemoryTransport linked pair, connect server to one end and the
+    // client to the other
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+  }
 
   return {
     client,
     capturedCommands,
+    ...(httpServerHandle ? { httpPort: httpServerHandle.port } : {}),
     resetCapturedCommands(): void {
       capturedCommands.length = 0;
     },
     async cleanup(): Promise<void> {
       await client.close();
       await server.close();
+      await httpServerHandle?.close();
       await shutdownXcodeToolsBridge();
       __clearTestExecutorOverrides();
       builtCommandModule.__clearTestExecutorOverrides();
