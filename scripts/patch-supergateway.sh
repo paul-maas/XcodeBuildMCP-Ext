@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
-# patch-supergateway.sh — Fix missing `await` on async transport.send() in supergateway.
+# patch-supergateway.sh — Two fixes to the npx-cached supergateway gateways.
 #
-# supergateway calls `transport.send(jsonMsg)` without `await` inside a
-# synchronous try/catch in a forEach callback. Since send() is async,
-# rejected promises escape the catch and crash the process as unhandled
-# rejections when an HTTP connection closes before the response is sent.
+# 1. Async send: supergateway calls `transport.send(jsonMsg)` without `await` inside a
+#    synchronous try/catch in a forEach callback. Since send() is async, rejected
+#    promises escape the catch and crash the process as unhandled rejections when an
+#    HTTP connection closes before the response is sent. We wrap the call in `.catch()`.
 #
-# This patch wraps the send() calls in an async IIFE with proper error
-# handling, avoiding the need to restructure the forEach -> for..of.
+# 2. Progress routing (stateful gateway only): supergateway forwards child notifications
+#    with no relatedRequestId, so `notifications/progress` lands on the standalone GET
+#    SSE stream instead of the originating request's POST response stream. The response
+#    connection then gets no keep-alive traffic and is idle-dropped, and the tool result
+#    cannot be delivered. We reunite progress with its request via
+#    `relatedRequestId = params.progressToken` (Claude Code sets progressToken == id).
+#
+# Both are interim workarounds; the native StreamableHTTPServerTransport migration
+# (Stage 3 of docs/MCP_HTTP_TRANSPORT_PLAN.md) removes supergateway and both patches.
 #
 # Upstream issue: https://github.com/supercorp-ai/supergateway/issues/116
 #
@@ -75,7 +82,46 @@ patch_file() {
   patch_count=$((patch_count + 1))
 }
 
-patch_file "$GATEWAYS/stdioToStatefulStreamableHttp.js"
+# Stateful streamable-HTTP gateway only: route `notifications/progress` to the
+# originating request's stream via `relatedRequestId = progressToken`, and wrap in
+# `.catch()`. Without this the child's progress notifications are forwarded with no
+# relatedRequestId, so the SDK puts them on the standalone GET SSE stream while the
+# request's POST response connection receives no keep-alive traffic and is idle-dropped
+# by the Docker->host path — the tool result then cannot be delivered ("No connection
+# established for request ID: N"). Claude Code sets progressToken == request id, so this
+# reunites the heartbeat with the connection that carries the response.
+# NOTE: interim workaround; the native StreamableHTTPServerTransport migration (Stage 3
+# of docs/MCP_HTTP_TRANSPORT_PLAN.md) removes supergateway and makes this unnecessary.
+patch_stateful_file() {
+  local file="$1"
+  local name
+  name=$(basename "$file")
+
+  if [[ ! -f "$file" ]]; then
+    echo "  SKIP: $name (not found)"
+    return
+  fi
+
+  if grep -q 'relatedRequestId' "$file" 2>/dev/null; then
+    echo "  OK:   $name (already patched)"
+    return
+  fi
+
+  if ! grep -q 'transport\.send(jsonMsg);' "$file" 2>/dev/null; then
+    echo "  SKIP: $name (pattern not found)"
+    return
+  fi
+
+  sed -i.bak \
+    's|transport\.send(jsonMsg);|transport.send(jsonMsg, (jsonMsg \&\& jsonMsg.method === "notifications/progress" \&\& jsonMsg.params \&\& jsonMsg.params.progressToken != null) ? { relatedRequestId: jsonMsg.params.progressToken } : undefined).catch((e) => logger.error("Async send failed:", e));|g' \
+    "$file"
+
+  rm -f "${file}.bak"
+  echo "  PATCH: $name (progress routing + async catch)"
+  patch_count=$((patch_count + 1))
+}
+
+patch_stateful_file "$GATEWAYS/stdioToStatefulStreamableHttp.js"
 patch_file "$GATEWAYS/stdioToStatelessStreamableHttp.js"
 patch_file "$GATEWAYS/stdioToSse.js"
 
