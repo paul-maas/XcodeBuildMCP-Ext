@@ -2,11 +2,26 @@
 
 ## Context
 
-Running `test_macos` against the host MCP server from a Linux dev container fails on the full suite: the transport breaks mid-run on slow Swift tests with `Thread.sleep` calls. Per-class scoped runs work.
+Running a full `test_macos` suite against the host MCP server from a Linux dev container failed: the run either got killed early or completed but never delivered its result. Per-class scoped runs worked (short enough to dodge the timeouts).
 
 The current stack is `Docker → HTTP → supergateway (--stateful, --sessionTimeout 900000) → stdio → node build/cli.js mcp → xcodebuild test`. See `scripts/serve-mcp.sh` and `scripts/patch-supergateway.sh`.
 
+## Status (as of 2026-07)
+
+The full monolithic `test_macos` run now completes and delivers its structured result end-to-end (validated live: ~13 KB payload, `diagnostics.errors: 0`, 35 real test failures, 1697 discovered). Shipped so far:
+
+- ✅ **Layer D — response size** (commits `5a648d6b`, `28390526`): capped `tests.selected`; stopped misclassifying os_log as build errors. Details under "Layer D" below.
+- ✅ **Layer A1 — progress heartbeat** (commit `29e7f077`): server emits `notifications/progress` so the transport's idle timers stay warm. Details in Stage 1.
+- ✅ **Interim supergateway progress-routing patch** (commit `adbf92e9`): routes progress to the request's stream so the response connection survives. Details under "Interim supergateway patch". **This is a workaround, not the fix.**
+
+Remaining (this document):
+
+- ⏳ **Stage 3 — Layer B** (native `StreamableHTTPServerTransport`, remove supergateway): the real root-cause fix. Deletes the need for both supergateway patches. **Next major work; best done in a fresh context using this doc as the spec.**
+- ⏳ **Stage 2 — Layer A2** (AbortSignal → `xcodebuild` process-group kill): reordered to **after** Stage 3. It is no longer urgent (the heartbeat means runs complete instead of dying mid-run, so idle-drop orphans no longer occur), and it is cleaner to build on Layer B's well-defined cancellation signal than on supergateway's `child.kill()` semantics.
+
 ## Root cause (three independent layers)
+
+_Original diagnosis — retrospective. Layers A1 and D are now fixed (see Status); the file:line references below reflect the pre-fix code._
 
 ### Layer A — MCP-protocol level
 
@@ -34,7 +49,7 @@ Separate from the transport, the tool's `structuredContent` was unbounded and gr
 - `tests.selected` capped at `MAX_SELECTED_TESTS = 100`, count preserved in `discovered.total` (`src/utils/xcodebuild-domain-results.ts`, commit `5a648d6b`).
 - `isBuildErrorDiagnosticLine` rejects `Process[pid:tid]` runtime-log lines before the loose `error:` match (`src/utils/xcodebuild-line-parsers.ts`, commit `28390526`).
 
-Necessary but **not sufficient**, and not yet validated end-to-end: a silent run dies (Layer A) before it can reach the response phase, so the shrunk response is never produced.
+Necessary but **not sufficient** on its own — a silent run died before reaching the response phase. Now validated end-to-end once Layer A1 + progress routing let a run deliver: the live full-suite result was ~13 KB with `diagnostics.errors: 0`.
 
 ## Empirical validation findings (2026-07)
 
@@ -43,6 +58,8 @@ A live container→host run confirmed the layer priority:
 1. **Layer A is the proximate blocker.** The client idle-watchdog `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` (unit **milliseconds**, default **30000 = 30 s**, `0` disables) aborts any MCP tool call that emits no notification for 30 s. With no server-side progress, every silent `test_macos` dies at 30 s. Disabling it let the run survive to ~165 s, where a **second, transport-layer idle drop** fired (`"transport dropped mid-call"`), attributed to the container→host:9090 path (Docker Desktop NAT and/or the container firewall) closing the silent SSE stream. Disabling client timeouts is whack-a-mole; only server-side progress (Layer A) keeps *all* idle timers warm.
 2. **Layer A2 confirmed.** When the session died, the `xcodebuild` subtree was orphaned on the host (reparented to launchd), plus a leaked test-host app and MCP child — exactly the cancellation gap A2 addresses.
 3. **Earlier "300 s idle" framing was wrong.** The real client default is 30 s (ms). The host-side Node `requestTimeout` (default 300 s) governs request receipt, not the response, and never fired.
+4. **Layer A1 works, but supergateway broke delivery.** With the heartbeat shipped, a full run survived build + test to completion (~565 s, 3.4× past the old 165 s death) — the idle-abort is gone. But the result was then lost: `Async send failed: No connection established for request ID: N`. Cause: supergateway forwards child notifications with **no `relatedRequestId`**, so the heartbeat's `notifications/progress` land on the standalone GET SSE stream (which keeps the client watchdog happy) while the request's POST **response** connection gets no keep-alive traffic and is idle-dropped — so the completed result cannot be delivered.
+5. **Interim patch confirmed the diagnosis.** Patching supergateway to forward progress with `relatedRequestId = params.progressToken` (Claude Code sets `progressToken == id`) reunited the heartbeat with the response connection; the next full run delivered its result cleanly (Status section). This request↔notification association is exactly what a native transport (Stage 3) provides for free — motivating Layer B beyond the original "any HTTP error kills the child" reason.
 
 ### Separate issue — helper daemon code-signing race (not a transport problem)
 
@@ -50,53 +67,44 @@ The specific validation run was pathologically silent (258 s) because the app-un
 
 ## Conceptual solution
 
-Three remediations, each addressing one layer; layers A1 + A2 alone close the immediate failure mode.
+Remediations by layer. In practice a working end-to-end path today needs **Layer D** (bounded response) + **Layer A1** (heartbeat) + **request-scoped progress routing** — the last via the interim supergateway patch now, permanently via Layer B. A2 is orphan cleanup; C is the long-term direction.
 
-| Layer | Remediation | Effect |
-| --- | --- | --- |
-| A1 | Wire `extra.sendNotification` → `notifications/progress` with throttling and a periodic heartbeat | Client request timer never expires; session counter stays positive; supergateway cleanup timer never starts |
-| A2 | Propagate `extra.signal` → `xcodebuild` via `child_process.spawn({ signal, detached: true })` + process-group kill | Client-side cancellation cleanly stops the test run; no orphaned `xcodebuild` |
-| B | Replace supergateway with native `StreamableHTTPServerTransport` from `@modelcontextprotocol/sdk` | Removes the "any HTTP error kills the child" pathology; transport lifetime is controlled in-process |
-| C (future) | Migrate long-running tools to `registerToolTask` once the experimental MCP Tasks API stabilizes | HTTP requests become short status pings; long execution lives server-side |
+| Layer | Remediation | Effect | Status |
+| --- | --- | --- | --- |
+| D | Cap `tests.selected`; keep os_log out of `diagnostics.errors` | Response stays small (~13 KB, `errors: 0`) | ✅ done |
+| A1 | `extra.sendNotification` → periodic `notifications/progress` heartbeat | Client idle-watchdog (30 s) and transport idle (~165 s) stay warm; run survives to completion | ✅ done |
+| — | Route progress with `relatedRequestId` so it rides the request's response stream | Completed result is actually deliverable (not lost on a dead idle connection) | ✅ interim patch; free under Layer B |
+| B | Replace supergateway with native `StreamableHTTPServerTransport` | Removes "any HTTP error kills the child" **and** the request↔notification association loss; deletes both supergateway patches | ⏳ Stage 3 |
+| A2 | Propagate `extra.signal` → `xcodebuild` process-group kill | Cancellation cleanly stops the run; no orphaned `xcodebuild` | ⏳ after Stage 3 |
+| C (future) | Migrate long-running tools to `registerToolTask` (experimental Tasks API) | HTTP requests become short status pings; long execution lives server-side | later |
 
 ## Phased plan
 
-### Stage 1 — Layer A1: progress notifications
+### Stage 1 — Layer A1: progress heartbeat — ✅ DONE (commit `29e7f077`)
 
-1.1 Extend `ToolHandlerContext` (`src/rendering/types.ts`):
-- `sendProgress?: (params: { progress: number; total?: number; message?: string }) => void` — undefined when the client did not provide a `progressToken`. The closure captures the token so no caller ever handles it directly (single source of truth).
-- `signal?: AbortSignal`
+Shipped as a simple heartbeat, deliberately **simpler** than the fragment-mapping bridge originally sketched here (that richer design is kept under "Deferred" in 1.5).
 
-1.2 In `src/utils/tool-registry.ts:296-360`, accept the SDK's `extra` argument:
-```ts
-import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
-import type { ServerRequest, ServerNotification } from '@modelcontextprotocol/sdk/types.js';
-```
-Set `streamingFragmentsEnabled: true` for the MCP path — this is the flag that actually gates fragment forwarding (`src/utils/tool-execution-compat.ts:20`). Leave `liveProgressEnabled: false`: it is an independent CLI-rendering signal and turning it on in MCP mode would activate terminal-oriented paths in `renderCliTextRenderer`. When `extra._meta?.progressToken !== undefined`, build `sendProgress` as a closure that captures the token and forwards to `extra.sendNotification({ method: 'notifications/progress', params: { progressToken, progress, total, message } })`. When the token is absent, leave `ctx.sendProgress` undefined so callers explicitly `?.()` it. One code path either way.
+1.1 `ToolHandlerContext` (`src/rendering/types.ts`) gained:
+- `sendProgress?: (params: { progress: number; total?: number; message?: string }) => void` — set only when the client supplied a `progressToken`; the closure captures the token (single source of truth), so no caller handles it directly.
+- `signal?: AbortSignal` — carries `extra.signal`, plumbed for Stage 2 (not yet consumed).
 
-1.3 Add the bridging logic **inline** in `src/utils/tool-execution-compat.ts` — a `createFragmentToProgressBridge(sendProgress)` function that returns a fragment handler. Not a separate module: the consumer is one, and CLAUDE.md forbids abstractions beyond need.
+1.2 The MCP tool registration (`src/utils/tool-registry.ts`) now takes the SDK's `extra` argument (its type is inferred from `registerTool`'s callback — no explicit import, no `any`). When `extra._meta?.progressToken !== undefined`, `ctx.sendProgress` forwards to `extra.sendNotification({ method: 'notifications/progress', params: { progressToken, ... } })` (fire-and-forget with `.catch`). `streamingFragmentsEnabled` is left **false** (and `liveProgressEnabled` false): the heartbeat alone defeats the idle drops **without** routing pipeline fragments into the rendered response, so tool output and snapshot fixtures are unchanged. This is the key simplification over the original design.
 
-Bridge state:
-- Monotonic `progress` counter (never decreases).
-- Throttle: minimum 500 ms between sends.
-- Heartbeat: 4-second `setInterval` emits `progress` with the previous counter and `message: "…"` to keep the SSE stream warm during silent stretches.
-- Timer lifecycle: heartbeat starts on first fragment and stops via `clearInterval` when the pipeline reports finalization or `ctx.signal` aborts. Never leaks past the tool call.
+1.3 `startMcpProgressPump(sendProgress, intervalMs = 10_000)` in `src/utils/tool-execution-compat.ts`: emits an immediate progress at t=0, then a monotonic-counter heartbeat every 10 s (comfortably under the 30 s client watchdog). `total` is omitted (indeterminate progress). The timer is `unref`'d and `stop()` is called in the handler's `finally`, so it never leaks past the tool call. No fragment mapping — a fixed-cadence tick is enough to keep the stream warm.
 
-Fragment mapping uses the `{ kind, fragment }` two-level discrimination declared in `src/types/domain-fragments.ts`:
-- `kind: 'test-result'`, `fragment: 'test-discovery'` → sets `total` from `.total`.
-- `kind: 'test-result'` with running counts → `progress = passed + failed + skipped`.
-- `kind: 'infrastructure'`, `fragment: 'status'` → `message` + `progress++`.
-- `kind: 'compiler'`, `fragment: 'compiler-diagnostic'`, `severity: 'error'` → `message: "N errors so far"`.
-- `kind: 'transcript'` (`process-command`, `process-line`) → ignored for notification volume; only bumps a heartbeat-freshness marker so silent runs still get their heartbeat.
+1.4 Tests: `src/utils/__tests__/tool-execution-compat.test.ts` (immediate tick, monotonic cadence, `stop()` halts further sends). Existing suites stayed green; `src/test-utils/test-helpers.ts` needed no change because the new context fields are optional.
 
-1.4 In the MCP handler in `tool-registry.ts`, when `ctx.sendProgress` is set: construct the bridge via `createFragmentToProgressBridge(ctx.sendProgress)` and wrap `ctx.emit` to call the bridge handler in addition to the existing `session.emit(fragment)`.
+1.5 **Deferred (not built): fragment-based progress.** The original design mapped pipeline fragments (`test-discovery` → `total`, `test-progress` → `progress`, `compiler-diagnostic` → `message`) for meaningful progress numbers. That requires `streamingFragmentsEnabled: true`, which routes those fragments into the rendered response and changes snapshot fixtures. Deferred as a future enhancement — the plain heartbeat is sufficient to keep the transport warm, which is the whole point of Layer A.
 
-1.5 Tests:
-- Unit (extend the existing `src/utils/__tests__/tool-execution-compat.test.ts` or equivalent): monotonicity, throttle, heartbeat lifecycle (starts on first fragment, cleared on finalize/abort), fragment filtering.
-- Integration: tool call without `progressToken` — `ctx.sendProgress` undefined — produces zero notifications.
-- `src/test-utils/test-helpers.ts` — new context fields default to undefined / no-op so existing tests stay green.
+1.6 **Correction to the original plan:** the heartbeat did **not** make `scripts/patch-supergateway.sh` dead code. Validation (findings 4–5) showed supergateway needs an **additional** patch — routing progress via `relatedRequestId` — before the response is deliverable. Both supergateway patches are live and required until Stage 3 removes supergateway. See "Interim supergateway patch" below.
 
-1.6 Deactivation (not removal) of `scripts/patch-supergateway.sh`: with progress notifications flowing, the client's request timer never expires, so the late-send race the patch guards against no longer occurs. Mark the script as no longer required in a header comment but leave the file in place as a safety net. Physical retirement happens in Stage 3.6. Zero runtime change in Stage 1.
+### Interim supergateway patch — ✅ DONE (commit `adbf92e9`)
+
+`scripts/patch-supergateway.sh` now applies two edits to the npx-cached stateful streamable-HTTP gateway:
+1. **Async send** (pre-existing): wrap `transport.send(jsonMsg)` in `.catch()` so rejected sends don't crash the process.
+2. **Progress routing** (new): forward `notifications/progress` with `relatedRequestId = params.progressToken`, so the heartbeat lands on the request's POST response stream instead of the standalone GET stream. Without it the response connection is idle-dropped and the result is undeliverable (findings 4–5).
+
+Both are **interim workarounds**. Stage 3 (native transport) removes supergateway and deletes this script — a native `StreamableHTTPServerTransport` associates request-scoped notifications with their stream automatically, so neither patch is needed.
 
 ### Stage 2 — Layer A2: AbortSignal propagation
 
@@ -118,7 +126,7 @@ Both options are opt-in only — never propagated to long-lived sessions:
 - If still alive, `process.kill(-child.pid, 'SIGKILL')`.
 - Note: `xcodebuild` catches SIGTERM and runs its own cleanup; 10 s is a starting grace period, revisit if flake logs show truncated `xcresult`.
 
-2.3 In the MCP handler from Stage 1, set `ctx.signal = extra.signal`.
+2.3 `ctx.signal = extra.signal` is already wired in the Stage 1 MCP handler (`ToolHandlerContext.signal`); Stage 2 only needs to consume it — no handler change required here.
 
 2.4 Pass `ctx.signal` explicitly through `test_macos`, `test_sim`, `test_device`, and `build_run_*` into `executeXcodeBuildCommand`.
 
@@ -158,7 +166,7 @@ PATH-enrichment and `XCODEBUILDMCP_ENABLED_WORKFLOWS` stay. `exec` replaces the 
 - **Preferred**: drop the PID file entirely. With `exec`, there is exactly one process; whoever started the script (systemd, launchd, tty) owns SIGTERM propagation directly. No external tooling in this repo reads `logs/mcp-server-${PORT}.pid`.
 - **Fallback**, only if an external consumer of that PID file surfaces: move creation and cleanup into the Node CLI in `registerMcpCommand` (write on transport ready, `process.on('exit', ...)` to remove).
 
-3.6 Move `scripts/patch-supergateway.sh` (already inert since Stage 1.6) to `scripts/legacy/patch-supergateway.sh` and keep for one release as a rollback path. Remove all README/docs references.
+3.6 Move `scripts/patch-supergateway.sh` (still active until this stage — both the async-send and progress-routing patches) to `scripts/legacy/patch-supergateway.sh` once the native transport replaces supergateway, and keep for one release as a rollback path. Remove all README/docs references.
 
 3.7 Smoke test (`src/smoke-tests/__tests__/mcp-http-transport.test.ts`):
 - Use `Client` + `StreamableHTTPClientTransport` from `@modelcontextprotocol/sdk/client/streamableHttp.js`.
@@ -191,7 +199,7 @@ When the experimental MCP Tasks API (`registerToolTask` in `@modelcontextprotoco
 
 Stages 1 and 2 are independent and parallelizable. Stage 3 is independent of 1 and 2 but should land after them so the HTTP smoke test exercises the full progress + cancellation path. Stage 4 ships last.
 
-Stage 1 (progress notifications) is the fix that unblocks the full-suite `test_macos` run — confirmed empirically (see "Empirical validation findings"). The proximate killers are silence-driven idle timeouts — the client `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` at 30 s and a ~165 s transport-layer idle drop on the container→host path — **not** supergateway's 15-minute `SessionAccessCounter` cleanup. Server-side progress keeps the SSE stream warm so none of these idle timers fire. It also lets a run reach the response phase, which is the only way the Layer D size fix (already shipped) gets exercised end-to-end. `scripts/patch-supergateway.sh` becomes dead code from Stage 1.6 onward and is physically retired in Stage 3.6.
+Stage 1 (progress heartbeat) **plus** the interim progress-routing patch together unblock the full-suite `test_macos` run — confirmed empirically (see "Empirical validation findings" and Status). The proximate killers are silence-driven idle timeouts — the client `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` at 30 s and a ~165 s transport-layer idle drop on the container→host path — **not** supergateway's 15-minute `SessionAccessCounter` cleanup. The heartbeat keeps the streams warm so no idle timer fires; the routing patch ensures the completed result rides a warm connection instead of a dead one. Reaching the response phase is also the only way the Layer D size fix (already shipped) gets exercised end-to-end. Stage 3 replaces both supergateway patches with a native transport that does this correctly by construction; `scripts/patch-supergateway.sh` is retired in Stage 3.6.
 
 Each stage ships as a separate PR. Stage 3 ships behind the `--transport http` flag; `stdio` remains the default so existing deployments are not affected.
 
@@ -201,14 +209,14 @@ Audit ran against this plan during design. Twelve risks were identified; eleven 
 
 ## References
 
-- `src/utils/tool-registry.ts:296-360` — current MCP handler registration (no `extra` argument, flags hardcoded false).
-- `src/utils/tool-execution-compat.ts` — fragment → MCP context adapter; also the host for the new `createFragmentToProgressBridge`.
-- `src/types/domain-fragments.ts` — `{ kind, fragment }` two-level fragment discrimination that the bridge maps over.
+- `src/utils/tool-registry.ts` — MCP handler registration; now takes the SDK `extra`, builds `ctx.sendProgress`, and runs the heartbeat pump (commit `29e7f077`). `streamingFragmentsEnabled`/`liveProgressEnabled` remain false.
+- `src/utils/tool-execution-compat.ts` — MCP context adapter; host of `startMcpProgressPump` (the shipped heartbeat) and `createStreamingExecutionContext`.
+- `src/types/domain-fragments.ts` — `{ kind, fragment }` two-level fragment discrimination (input to the deferred fragment-based progress in Stage 1.5).
 - `src/utils/test-common.ts:185-193` — single-phase `xcodebuild test` invocation for macOS.
 - `src/utils/CommandExecutor.ts` — target for the new `signal` and `processGroup` fields on `CommandExecOptions`.
 - `src/utils/command.ts:68-89` — sole point of `spawn(...)` in the default executor.
 - `src/server/mcp-lifecycle.ts` — process-level lifecycle handlers.
 - `src/server/server.ts:53-65,92-96` — MCP server capabilities and stdio transport binding.
 - `src/utils/session-store.ts:177` — singleton session defaults store (single-session posture reason).
-- `scripts/serve-mcp.sh`, `scripts/patch-supergateway.sh` — current supergateway-based bridge.
+- `scripts/serve-mcp.sh`, `scripts/patch-supergateway.sh` — current supergateway-based bridge; the patch script applies two edits (async-send + progress routing via `relatedRequestId`), both retired by Stage 3.
 - `@modelcontextprotocol/sdk` v1.27.1 — provides `StreamableHTTPServerTransport`, `RequestHandlerExtra` (`signal`, `sendNotification`, `_meta`), and experimental Tasks API.
