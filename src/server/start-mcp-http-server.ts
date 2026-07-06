@@ -28,6 +28,10 @@ import { toErrorMessage } from '../utils/errors.ts';
 
 const MCP_ENDPOINT_PATH = '/mcp';
 const SESSION_ID_HEADER = 'mcp-session-id';
+// Two orders of magnitude above the largest observed MCP payloads (~150 KB
+// structured tool results); bounds memory without ever getting in the way of
+// legitimate traffic.
+const MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024;
 
 export interface McpHttpServerOptions {
   port: number;
@@ -49,10 +53,24 @@ interface McpHttpSession {
   idleTimer: NodeJS.Timeout | null;
 }
 
+class RequestBodyTooLargeError extends Error {
+  constructor() {
+    super(`Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`);
+    this.name = 'RequestBodyTooLargeError';
+  }
+}
+
 function readRequestBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
+    let totalBytes = 0;
     req.on('data', (chunk: Buffer) => {
+      totalBytes += chunk.length;
+      if (totalBytes > MAX_REQUEST_BODY_BYTES) {
+        req.pause();
+        reject(new RequestBodyTooLargeError());
+        return;
+      }
       chunks.push(chunk);
     });
     req.on('end', () => {
@@ -67,12 +85,13 @@ function respondJsonRpcError(
   statusCode: number,
   code: number,
   message: string,
+  headers?: Record<string, string>,
 ): void {
   if (res.headersSent) {
     res.end();
     return;
   }
-  res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+  res.writeHead(statusCode, { 'Content-Type': 'application/json', ...headers });
   res.end(JSON.stringify({ jsonrpc: '2.0', error: { code, message }, id: null }));
 }
 
@@ -192,8 +211,16 @@ export async function startMcpHttpServer(
       try {
         const rawBody = await readRequestBody(req);
         parsedBody = rawBody.length > 0 ? JSON.parse(rawBody) : undefined;
-      } catch {
-        respondJsonRpcError(res, 400, -32700, 'Parse error');
+      } catch (error) {
+        if (error instanceof RequestBodyTooLargeError) {
+          // Connection: close makes Node tear the socket down after the
+          // response, discarding whatever the client is still uploading.
+          respondJsonRpcError(res, 413, -32000, 'Request body too large', {
+            Connection: 'close',
+          });
+        } else {
+          respondJsonRpcError(res, 400, -32700, 'Parse error');
+        }
         return;
       }
 
@@ -209,6 +236,34 @@ export async function startMcpHttpServer(
         return;
       }
       if (isInitializeRequest(parsedBody)) {
+        // The SDK validates these headers inside handleRequest, but by then
+        // the previous session has already been closed for takeover — an
+        // invalid client must not displace the active session. Checks mirror
+        // webStandardStreamableHttp.js exactly.
+        const acceptHeader = req.headers.accept;
+        if (
+          !acceptHeader?.includes('application/json') ||
+          !acceptHeader.includes('text/event-stream')
+        ) {
+          respondJsonRpcError(
+            res,
+            406,
+            -32000,
+            'Not Acceptable: Client must accept both application/json and text/event-stream',
+          );
+          return;
+        }
+        const contentType = req.headers['content-type'];
+        if (!contentType || !contentType.includes('application/json')) {
+          respondJsonRpcError(
+            res,
+            415,
+            -32000,
+            'Unsupported Media Type: Content-Type must be application/json',
+          );
+          return;
+        }
+
         const session = await createSessionTransport();
         trackRequest(session, res);
         try {

@@ -95,8 +95,17 @@ describe('MCP Streamable HTTP transport (e2e)', () => {
     });
     expect(rawResponse).toContain('HTTP/1.1 400');
 
-    // An initialize the SDK rejects before creating the session (missing the
-    // required Accept header) must not leave a transport bound to the server.
+    // Oversized body must get a 413 before any session routing happens.
+    const oversized = await fetch(baseUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: 'x'.repeat(17 * 1024 * 1024),
+    });
+    expect(oversized.status).toBe(413);
+    await oversized.body?.cancel();
+
+    // An initialize without the required Accept header is rejected up front
+    // (406) and must NOT displace the active session via takeover.
     const initializeBody = JSON.stringify({
       jsonrpc: '2.0',
       id: 1,
@@ -112,12 +121,15 @@ describe('MCP Streamable HTTP transport (e2e)', () => {
       headers: { 'Content-Type': 'application/json' },
       body: initializeBody,
     });
-    expect(rejected.status).toBeGreaterThanOrEqual(400);
+    expect(rejected.status).toBe(406);
     await rejected.body?.cancel();
 
-    // A subsequent valid initialize must succeed — the failed one above used
-    // to leave the shared McpServer bound to a session-less transport, making
-    // every future server.connect() throw "Already connected".
+    // The harness client's session survived all of the above.
+    const { tools } = await harness.client.listTools();
+    expect(tools.length).toBeGreaterThan(0);
+
+    // A valid raw initialize still succeeds (and takes over the session —
+    // which is why this test runs last in the file).
     const accepted = await fetch(baseUrl, {
       method: 'POST',
       headers: {

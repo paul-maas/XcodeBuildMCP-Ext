@@ -18,6 +18,7 @@
 ### Changed
 
 - `scripts/serve-mcp.sh` launches the MCP server directly via the native Streamable HTTP transport instead of through a supergateway bridge
+- Declared a minimum supported Node.js version (`engines.node >= 22`); previously the package declared no `engines` field and the README stated Node 18+
 
 ### Removed
 

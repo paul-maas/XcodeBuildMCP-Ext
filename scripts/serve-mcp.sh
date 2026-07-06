@@ -40,6 +40,11 @@ export PATH
 if [[ -z "${XCODEBUILDMCP_ENABLED_WORKFLOWS:-}" ]]; then
   export XCODEBUILDMCP_ENABLED_WORKFLOWS="${WORKFLOWS:-build-tools,simulator,macos,device,doctor,workflow-discovery,project-discovery,utilities}"
 fi
+# Config layering is config > env: a project config in the launch directory
+# silently overrides the env var above.
+if [[ -f "${PWD}/.xcodebuildmcp/config.yaml" ]]; then
+  echo "NOTE: ${PWD}/.xcodebuildmcp/config.yaml exists; its enabledWorkflows override the WORKFLOWS env var."
+fi
 
 # --- Port (display only; the actual value is parsed by the CLI) ---
 PORT=9090
