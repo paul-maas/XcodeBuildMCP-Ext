@@ -198,6 +198,7 @@ export async function createMcpTestHarness(opts?: McpTestHarnessOptions): Promis
     'simulator-management',
     'device',
     'macos',
+    'build-tools',
     'project-discovery',
     'project-scaffolding',
     'session-management',
