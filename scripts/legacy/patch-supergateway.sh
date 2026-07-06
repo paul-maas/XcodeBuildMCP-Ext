@@ -13,8 +13,9 @@
 #    cannot be delivered. We reunite progress with its request via
 #    `relatedRequestId = params.progressToken` (Claude Code sets progressToken == id).
 #
-# Both are interim workarounds; the native StreamableHTTPServerTransport migration
-# (Stage 3 of docs/MCP_HTTP_TRANSPORT_PLAN.md) removes supergateway and both patches.
+# LEGACY: retired by the native Streamable HTTP transport (`mcp --transport http`,
+# Stage 3 of docs/MCP_HTTP_TRANSPORT_PLAN.md), which made supergateway and both
+# patches unnecessary. Kept for one release as a rollback path.
 #
 # Upstream issue: https://github.com/supercorp-ai/supergateway/issues/116
 #

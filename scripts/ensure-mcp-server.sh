@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# ensure-mcp-server.sh — Start the MCP bridge if not already running.
+# ensure-mcp-server.sh — Start the HTTP MCP server if not already running.
 #
 # Idempotent: safe to call on every container start, cron, or manually.
 # Checks if port is already in use before spawning.
+#
+# The PID file written here points directly at the node process: serve-mcp.sh
+# exec's node, so the backgrounded PID captured below survives as node's PID.
 #
 # Usage:
 #   ./scripts/ensure-mcp-server.sh              # default port 9090
@@ -38,7 +41,7 @@ stop_old_process() {
   if kill -0 "$old_pid" 2>/dev/null; then
     echo "[ensure-mcp] Stopping previous server (PID $old_pid)..."
     kill -TERM "$old_pid" 2>/dev/null || true
-    # Wait up to 5s for graceful shutdown (serve-mcp.sh trap propagates to children)
+    # Wait up to 5s for graceful shutdown (serve-mcp.sh exec's node, so TERM hits it directly)
     local i=0
     while kill -0 "$old_pid" 2>/dev/null && (( i < 10 )); do
       sleep 0.5

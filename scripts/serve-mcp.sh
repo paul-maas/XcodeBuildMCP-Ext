@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # serve-mcp.sh — Expose the MCP server over HTTP for Docker/remote clients.
 #
-# Wraps supergateway to bridge stdio MCP to Streamable HTTP, setting the
-# correct PATH and workflow config so homebrew-installed tools (xcodegen,
-# create-dmg, etc.) are reachable from the child process.
+# Launches the MCP server directly with the native Streamable HTTP transport
+# (`mcp --transport http`), setting the correct PATH and workflow config so
+# homebrew-installed tools (xcodegen, create-dmg, etc.) are reachable.
 #
 # Usage:
 #   ./scripts/serve-mcp.sh                        # defaults: port 9090, all workflows
 #   ./scripts/serve-mcp.sh --port 8080             # custom port
+#   ./scripts/serve-mcp.sh --host 0.0.0.0          # bind beyond localhost
 #   WORKFLOWS="build-tools,simulator" ./scripts/serve-mcp.sh  # specific workflows
+#
+# Extra arguments are passed through to `mcp` (e.g. --session-timeout-ms).
 #
 # Docker client config (.mcp.json inside container):
 #   {
@@ -38,7 +41,7 @@ if [[ -z "${XCODEBUILDMCP_ENABLED_WORKFLOWS:-}" ]]; then
   export XCODEBUILDMCP_ENABLED_WORKFLOWS="${WORKFLOWS:-build-tools,simulator,macos,device,doctor,workflow-discovery,project-discovery,utilities}"
 fi
 
-# --- Port ---
+# --- Port (display only; the actual value is parsed by the CLI) ---
 PORT=9090
 prev_arg=""
 for arg in "$@"; do
@@ -55,38 +58,7 @@ echo "Workflows:  ${XCODEBUILDMCP_ENABLED_WORKFLOWS}"
 echo "PATH includes: $(which xcodegen 2>/dev/null || echo '(xcodegen not found)'), $(which codesign 2>/dev/null || echo '(codesign not found)')"
 echo ""
 
-# Filter out --port from passthrough args to avoid duplication
-FILTERED_ARGS=()
-skip_next=false
-for arg in "$@"; do
-  if $skip_next; then
-    skip_next=false
-    continue
-  fi
-  if [[ "$arg" == "--port" ]]; then
-    skip_next=true
-    continue
-  fi
-  FILTERED_ARGS+=("$arg")
-done
-
-# Propagate signals to the entire process group so child processes
-# (supergateway -> node mcp) are cleaned up when this script is killed.
-cleanup() {
-  trap - EXIT TERM INT  # prevent re-entry
-  rm -f "${SCRIPT_DIR}/../logs/mcp-server-${PORT}.pid"
-  kill -TERM 0 2>/dev/null
-  wait
-}
-trap cleanup EXIT TERM INT
-
-npx supergateway \
-  --port "$PORT" \
-  --stdio "node ${PROJECT_ROOT}/build/cli.js mcp" \
-  --outputTransport streamableHttp \
-  --stateful \
-  --sessionTimeout 900000 \
-  --cors \
-  ${FILTERED_ARGS[@]+"${FILTERED_ARGS[@]}"} &
-
-wait $!
+# exec replaces this shell with node: exactly one process, and whoever started
+# the script (launchd, ensure-mcp-server.sh, tty) delivers signals to it directly.
+# --port and friends arrive via "$@"; the CLI default (9090) matches PORT above.
+exec node "${PROJECT_ROOT}/build/cli.js" mcp --transport http "$@"
