@@ -36,7 +36,7 @@ import {
   __clearTestDebuggerToolContextOverride,
   DebuggerManager,
 } from '../utils/debugger/index.ts';
-import { getPackageRoot } from '../core/manifest/load-manifest.ts';
+import { getPackageRoot, loadManifest } from '../core/manifest/load-manifest.ts';
 import { shutdownXcodeToolsBridge } from '../integrations/xcode-tools-bridge/index.ts';
 
 export interface CapturedCommand {
@@ -190,26 +190,17 @@ export async function createMcpTestHarness(opts?: McpTestHarnessOptions): Promis
   // Create server (uses the real createServer + manifest system)
   const server = createServer();
 
-  // Bootstrap with workflows enabled for maximum coverage.
+  // Bootstrap with workflows enabled for maximum coverage. The list is derived
+  // from the manifest so newly added workflows are covered automatically (a
+  // hardcoded list here silently missed build-tools when it was introduced).
   // xcode-ide is excluded: it connects to the real Xcode tools bridge MCP
   // server which triggers system permission prompts and requires Xcode.
-  const allWorkflows = opts?.enabledWorkflows ?? [
-    'simulator',
-    'simulator-management',
-    'device',
-    'macos',
-    'build-tools',
-    'project-discovery',
-    'project-scaffolding',
-    'session-management',
-    'swift-package',
-    'logging',
-    'debugging',
-    'ui-automation',
-    'utilities',
-    'workflow-discovery',
-    'doctor',
-  ];
+  const excludedWorkflows = new Set(['xcode-ide']);
+  const allWorkflows =
+    opts?.enabledWorkflows ??
+    Array.from(loadManifest().workflows.values())
+      .filter((workflow) => workflow.availability.mcp && !excludedWorkflows.has(workflow.id))
+      .map((workflow) => workflow.id);
 
   await bootstrapServer(server, {
     enabledWorkflows: allWorkflows,
