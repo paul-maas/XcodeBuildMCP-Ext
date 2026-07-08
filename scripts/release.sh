@@ -496,10 +496,14 @@ echo ""
 echo "⏳ Monitoring GitHub Actions workflow..."
 echo "This may take a few minutes..."
 
+# gh resolves forks to the upstream repository by default; pin every gh call
+# to the repo the tag was actually pushed to.
+REPO_SLUG=$(git remote get-url origin | sed -E 's#^(git@github\.com:|https://github\.com/)##; s#\.git$##')
+
 # Poll for the workflow run triggered by this tag (may take a few seconds to appear)
 RUN_ID=""
 for i in $(seq 1 12); do
-  RUN_ID=$(gh run list --workflow=release.yml --branch="v$VERSION" --limit=1 --json databaseId --jq '.[0].databaseId')
+  RUN_ID=$(gh run list --repo "$REPO_SLUG" --workflow=release.yml --branch="v$VERSION" --limit=1 --json databaseId --jq '.[0].databaseId')
   if [[ -n "$RUN_ID" ]]; then
     break
   fi
@@ -514,21 +518,21 @@ if [[ -n "$RUN_ID" ]]; then
   echo ""
 
   # Watch the workflow with exit status
-  if gh run watch "$RUN_ID" --exit-status; then
+  if gh run watch "$RUN_ID" --repo "$REPO_SLUG" --exit-status; then
     echo ""
     echo "✅ Release v$VERSION completed successfully!"
     echo "📦 View on NPM: https://www.npmjs.com/package/xcodebuildmcp/v/$VERSION"
-    echo "🎉 View release: https://github.com/getsentry/XcodeBuildMCP/releases/tag/v$VERSION"
+    echo "🎉 View release: https://github.com/$REPO_SLUG/releases/tag/v$VERSION"
     # MCP Registry verification link
     echo "🔎 Verify MCP Registry: https://registry.modelcontextprotocol.io/v0/servers?search=com.xcodebuildmcp/XcodeBuildMCP&version=latest"
   else
     echo ""
     echo "❌ CI workflow monitoring failed!"
     echo "ℹ️  This may be a transient API error. The workflow may still be running."
-    echo "   Check manually: gh run view $RUN_ID"
+    echo "   Check manually: gh run view $RUN_ID --repo $REPO_SLUG"
     echo ""
     # Prefer job state: if the primary 'release' job succeeded, treat as success.
-    RELEASE_JOB_CONCLUSION=$(gh run view "$RUN_ID" --json jobs --jq '.jobs[] | select(.name=="release") | .conclusion')
+    RELEASE_JOB_CONCLUSION=$(gh run view "$RUN_ID" --repo "$REPO_SLUG" --json jobs --jq '.jobs[] | select(.name=="release") | .conclusion')
     if [ "$RELEASE_JOB_CONCLUSION" = "success" ]; then
       echo "⚠️ Workflow reported failure, but primary 'release' job concluded SUCCESS."
       echo "✅ Treating release as successful. Tag v$VERSION is kept."
@@ -554,10 +558,10 @@ if [[ -n "$RUN_ID" ]]; then
     echo "   2. Commit your fixes"
     echo "   3. Run: ./scripts/release.sh $VERSION"
     echo ""
-    echo "🔍 To see what failed: gh run view $RUN_ID --log-failed"
+    echo "🔍 To see what failed: gh run view $RUN_ID --repo $REPO_SLUG --log-failed"
     exit 1
   fi
 else
   echo "⚠️  Could not find workflow run. Please check manually:"
-  echo "https://github.com/getsentry/XcodeBuildMCP/actions"
+  echo "https://github.com/$REPO_SLUG/actions"
 fi
