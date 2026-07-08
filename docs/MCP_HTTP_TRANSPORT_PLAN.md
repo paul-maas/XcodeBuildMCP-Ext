@@ -16,8 +16,9 @@ The full monolithic `test_macos` run now completes and delivers its structured r
 - ✅ **Stage 3 — Layer B** (2026-07-06): native `StreamableHTTPServerTransport` via `mcp --transport http` (`src/server/start-mcp-http-server.ts`); supergateway removed from `scripts/serve-mcp.sh` and `scripts/patch-supergateway.sh` moved to `scripts/legacy/`. Implementation notes under "Stage 3" below.
 
 - ✅ **Stage 2 — Layer A2** (2026-07-08): AbortSignal → `xcodebuild` process-group kill. `CommandExecOptions` gained opt-in `signal`/`processGroup`; `ctx.signal` is threaded through `test_macos`/`test_sim`/`test_device` (via `createTestExecutor`) and the `build_run_*` build phase. Implementation notes under "Stage 2" below.
+- ✅ **Container acceptance over the native transport** (2026-07-08): full `test_macos` from the dev container (OrbStack → `host.docker.internal:9090`): 1697 tests discovered, 1648/35/14 passed/failed/skipped (the same 35 pre-existing app-level failures as the original validation), `diagnostics.errors: 0`, ~11-minute single request on one session with zero transport errors, full structured result delivered, no orphaned processes. The original failure scenario of this document no longer reproduces.
 
-Remaining (this document): nothing — Stages 1–4 are shipped. Stage 5 (Tasks API migration) stays direction-only.
+Remaining (this document): nothing — Stages 1–4 are shipped and accepted end-to-end. Stage 5 (Tasks API migration) stays direction-only.
 
 ## Root cause (three independent layers)
 
