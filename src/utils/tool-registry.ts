@@ -1,3 +1,4 @@
+import * as z from 'zod';
 import { type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { server } from '../server/server-state.ts';
 import type { ToolResponse } from '../types/common.ts';
@@ -16,6 +17,20 @@ import { createRenderSession } from '../rendering/render.ts';
 import { toStructuredEnvelope } from './structured-output-envelope.ts';
 import { getMcpOutputSchemaForRegistration } from '../core/structured-output-schema.ts';
 import { startMcpProgressPump } from './tool-execution-compat.ts';
+
+// MCP registrations reject unknown argument keys loudly instead of zod's
+// default silent stripping. With session defaults enabled the target fields
+// (projectPath, scheme, simulatorId, ...) are absent from public schemas, and
+// silently dropping them sent work to the session-default project instead of
+// the one the client named. The error text teaches the session-defaults flow.
+function buildStrictMcpInputSchema(shape: Record<string, z.ZodType>): z.ZodObject {
+  return z.strictObject(shape, {
+    error: (issue) =>
+      issue.code === 'unrecognized_keys'
+        ? `Unknown parameter(s): ${issue.keys.join(', ')}. Target selection (project, scheme, simulator, device) is managed via session defaults, not per-call arguments: switch with session_set_defaults (optionally profile + createIfNotExists for a temporary target such as a test fixture), inspect with session_show_defaults, revert with session_use_defaults_profile { global: true }.`
+        : undefined,
+  });
+}
 
 function sessionToToolResponse(session: ReturnType<typeof createRenderSession>): ToolResponse {
   const text = session.finalize();
@@ -287,7 +302,7 @@ export async function applyWorkflowSelectionFromManifest(
           toolName,
           {
             description: toolManifest.description ?? '',
-            inputSchema: toolModule.schema,
+            inputSchema: buildStrictMcpInputSchema(toolModule.schema),
             ...(outputSchema ? { outputSchema } : {}),
             annotations: toolManifest.annotations,
           },

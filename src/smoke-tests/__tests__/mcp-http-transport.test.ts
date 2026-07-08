@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { connect } from 'node:net';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createMcpTestHarness, type McpTestHarness } from '../mcp-test-harness.ts';
-import { expectContent } from '../test-helpers.ts';
+import { expectContent, extractText } from '../test-helpers.ts';
 
 let harness: McpTestHarness;
 
@@ -67,6 +67,26 @@ describe('MCP Streamable HTTP transport (e2e)', () => {
     // supplied (see startMcpProgressPump), so at least one notification must have
     // arrived on the request's stream before the result.
     expect(progressUpdates.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('rejects unknown tool parameters with a session-defaults hint', async () => {
+    // Regression: these keys used to be silently stripped by schema validation,
+    // sending the call to the session-default project instead of the named one.
+    // The SDK surfaces input-validation failures as an isError tool result.
+    const result = await harness.client.callTool({
+      name: 'test_macos',
+      arguments: { projectPath: '/tmp/Nope.xcodeproj', scheme: 'Nope' },
+    });
+
+    expect('isError' in result && result.isError === true).toBe(true);
+    const text = extractText(result);
+    expect(text).toContain('projectPath');
+    expect(text).toContain('session_set_defaults');
+
+    // The advertised schema tells schema-driven clients up front.
+    const { tools } = await harness.client.listTools();
+    const testMacos = tools.find((tool) => tool.name === 'test_macos');
+    expect(testMacos?.inputSchema.additionalProperties).toBe(false);
   });
 
   it('rejects malformed requests without crashing and recovers from a failed initialize', async () => {

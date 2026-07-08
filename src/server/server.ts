@@ -31,6 +31,7 @@ Prefer XcodeBuildMCP tools over shell commands for Apple platform tasks when ava
 
 Capabilities:
 - Session defaults: Configure project, scheme, simulator, and device defaults to avoid repetitive parameters
+- Target switching: project/scheme/simulator/device are session state, not per-call parameters (tools reject unknown arguments). Switch with session_set_defaults (optionally profile + createIfNotExists for a temporary target such as a test fixture), inspect with session_show_defaults, revert with session_use_defaults_profile { global: true }
 - Project discovery: Find Xcode projects/workspaces, list schemes, inspect build settings
 - Simulator workflows: Build, run, test, install, and launch apps on iOS simulators; manage simulator state (boot, erase, location, appearance)
 - Device workflows: Build, test, install, and launch apps on physical devices with code signing
