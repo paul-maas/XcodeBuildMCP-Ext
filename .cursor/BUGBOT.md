@@ -14,7 +14,6 @@ For full details see [README.md](README.md) and [docs/ARCHITECTURE.md](docs/ARCH
 * No hard-coded secrets, tokens or DSNs.
 * MCP tool logic functions that orchestrate long-running processes with sub-processes (e.g., `xcodebuild`) must flow through `CommandExecutor` with validated arguments. Standalone utility modules that invoke simple, short-lived commands may use direct `child_process`/`fs` imports and standard vitest mocking.
 * Paths must be sanitised via helpers in `src/utils/validation.ts`.
-* Sentry breadcrumbs / logs must **NOT** include user PII.
 
 ---
 

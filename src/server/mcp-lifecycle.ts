@@ -14,15 +14,16 @@ import { suppressProcessStdioWrites } from '../utils/shutdown-state.ts';
 
 export type McpStartupPhase =
   | 'initializing'
-  | 'hydrating-sentry-config'
-  | 'initializing-sentry'
   | 'creating-server'
   | 'bootstrapping-server'
   | 'starting-stdio-transport'
+  | 'starting-http-transport'
   | 'running'
   | 'deferred-initialization'
   | 'shutting-down'
   | 'stopped';
+
+export type McpTransportMode = 'stdio' | 'http';
 
 export type McpShutdownReason =
   | 'stdin-end'
@@ -100,7 +101,7 @@ interface McpLifecycleState {
 }
 
 export interface McpLifecycleCoordinator {
-  attachProcessHandlers(): void;
+  attachProcessHandlers(options?: { mode?: McpTransportMode }): void;
   detachProcessHandlers(): void;
   markPhase(phase: McpStartupPhase): void;
   registerServer(server: McpServer): void;
@@ -368,9 +369,10 @@ export function createMcpLifecycleCoordinator(
   };
 
   let handlersAttached = false;
+  let stdioHandlersAttached = false;
 
   const coordinator: McpLifecycleCoordinator = {
-    attachProcessHandlers(): void {
+    attachProcessHandlers(options?: { mode?: McpTransportMode }): void {
       if (handlersAttached) {
         return;
       }
@@ -378,10 +380,15 @@ export function createMcpLifecycleCoordinator(
 
       processRef.once('SIGTERM', handleSigterm);
       processRef.once('SIGINT', handleSigint);
-      processRef.stdin.once('end', handleStdinEnd);
-      processRef.stdin.once('close', handleStdinClose);
-      processRef.stdout?.once('error', handleStdoutError);
-      processRef.stderr?.once('error', handleStderrError);
+      // In http mode the process is not tethered to a client via stdio, so
+      // stdin/stdout/stderr disconnects must not trigger a shutdown.
+      if ((options?.mode ?? 'stdio') === 'stdio') {
+        stdioHandlersAttached = true;
+        processRef.stdin.once('end', handleStdinEnd);
+        processRef.stdin.once('close', handleStdinClose);
+        processRef.stdout?.once('error', handleStdoutError);
+        processRef.stderr?.once('error', handleStderrError);
+      }
       processRef.once('uncaughtException', handleUncaughtException);
       processRef.once('unhandledRejection', handleUnhandledRejection);
     },
@@ -394,10 +401,13 @@ export function createMcpLifecycleCoordinator(
 
       processRef.removeListener('SIGTERM', handleSigterm);
       processRef.removeListener('SIGINT', handleSigint);
-      processRef.stdin.removeListener('end', handleStdinEnd);
-      processRef.stdin.removeListener('close', handleStdinClose);
-      processRef.stdout?.removeListener('error', handleStdoutError);
-      processRef.stderr?.removeListener('error', handleStderrError);
+      if (stdioHandlersAttached) {
+        stdioHandlersAttached = false;
+        processRef.stdin.removeListener('end', handleStdinEnd);
+        processRef.stdin.removeListener('close', handleStdinClose);
+        processRef.stdout?.removeListener('error', handleStdoutError);
+        processRef.stderr?.removeListener('error', handleStderrError);
+      }
       processRef.removeListener('uncaughtException', handleUncaughtException);
       processRef.removeListener('unhandledRejection', handleUnhandledRejection);
     },

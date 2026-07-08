@@ -9,34 +9,39 @@
 
 import { createServer, startServer } from './server.ts';
 import { log, setLogLevel } from '../utils/logger.ts';
-import {
-  enrichSentryContext,
-  initSentry,
-  recordMcpLifecycleAnomalyMetric,
-  recordMcpLifecycleMetric,
-  setSentryRuntimeContext,
-} from '../utils/sentry.ts';
 import { version } from '../version.ts';
 import process from 'node:process';
 import { bootstrapServer } from './bootstrap.ts';
 import { createStartupProfiler, getStartupProfileNowMs } from './startup-profiler.ts';
-import { getConfig } from '../utils/config-store.ts';
-import { getRegisteredWorkflows } from '../utils/tool-registry.ts';
-import { hydrateSentryDisabledEnvFromProjectConfig } from '../utils/sentry-config.ts';
-import { createMcpLifecycleCoordinator, isTransportDisconnectReason } from './mcp-lifecycle.ts';
+import { createMcpLifecycleCoordinator } from './mcp-lifecycle.ts';
+import type { McpTransportMode } from './mcp-lifecycle.ts';
 import { runMcpShutdown } from './mcp-shutdown.ts';
+import { startMcpHttpServer } from './start-mcp-http-server.ts';
+import type { McpHttpServerHandle } from './start-mcp-http-server.ts';
+import { toErrorMessage } from '../utils/errors.ts';
+
+export interface StartMcpServerOptions {
+  /** Transport to serve MCP over. Defaults to stdio. */
+  transport?: McpTransportMode;
+  /** Port to listen on (http transport only). Defaults to 9090; 0 picks an ephemeral port. */
+  port?: number;
+  /** Address to bind to (http transport only). Defaults to 127.0.0.1. */
+  host?: string;
+  /** Idle session timeout in milliseconds (http transport only). Defaults to 0 (disabled). */
+  sessionTimeoutMs?: number;
+}
 
 /**
  * Start the MCP server.
- * This function initializes Sentry, creates and bootstraps the server,
- * sets up signal handlers for graceful shutdown, and starts the server.
+ * This function creates and bootstraps the server, sets up signal handlers
+ * for graceful shutdown, and starts the server on the requested transport.
  */
-export async function startMcpServer(): Promise<void> {
+export async function startMcpServer(options: StartMcpServerOptions = {}): Promise<void> {
+  const transportMode: McpTransportMode = options.transport ?? 'stdio';
+  let httpServerHandle: McpHttpServerHandle | null = null;
+
   const lifecycle = createMcpLifecycleCoordinator({
     onShutdown: async ({ reason, error, snapshot, server }) => {
-      const isCrash = reason === 'uncaught-exception' || reason === 'unhandled-rejection';
-      const event = isCrash ? 'crash' : 'shutdown';
-
       const transportMessages: Record<string, string> = {
         'stdin-end': 'MCP stdin ended; shutting down MCP server',
         'stdin-close': 'MCP stdin closed; shutting down MCP server',
@@ -45,27 +50,6 @@ export async function startMcpServer(): Promise<void> {
       };
       log('info', transportMessages[reason] ?? `MCP shutdown requested: ${reason}`);
 
-      if (!isTransportDisconnectReason(reason)) {
-        recordMcpLifecycleMetric({
-          event,
-          phase: snapshot.phase,
-          reason,
-          uptimeMs: snapshot.uptimeMs,
-          rssBytes: snapshot.rssBytes,
-          matchingMcpProcessCount: snapshot.matchingMcpProcessCount,
-          activeOperationCount: snapshot.activeOperationCount,
-          watcherRunning: snapshot.watcherRunning,
-        });
-
-        for (const anomaly of snapshot.anomalies) {
-          recordMcpLifecycleAnomalyMetric({
-            kind: anomaly,
-            phase: snapshot.phase,
-            reason,
-          });
-        }
-      }
-
       const result = await runMcpShutdown({
         reason,
         error,
@@ -73,12 +57,20 @@ export async function startMcpServer(): Promise<void> {
         server,
       });
 
+      // runMcpShutdown closed the McpServer (and with it the bound transport);
+      // now close any remaining session transports and the HTTP listener.
+      if (httpServerHandle) {
+        await httpServerHandle.close().catch((closeError: unknown) => {
+          log('warn', `HTTP server close failed: ${toErrorMessage(closeError)}`);
+        });
+      }
+
       lifecycle.detachProcessHandlers();
       process.exit(result.exitCode);
     },
   });
 
-  lifecycle.attachProcessHandlers();
+  lifecycle.attachProcessHandlers({ mode: transportMode });
 
   try {
     const profiler = createStartupProfiler('start-mcp-server');
@@ -87,15 +79,7 @@ export async function startMcpServer(): Promise<void> {
     // Clients can override via logging/setLevel MCP request
     setLogLevel('info');
 
-    lifecycle.markPhase('hydrating-sentry-config');
-    await hydrateSentryDisabledEnvFromProjectConfig();
-
     let stageStartMs = getStartupProfileNowMs();
-    lifecycle.markPhase('initializing-sentry');
-    initSentry({ mode: 'mcp' });
-    profiler.mark('initSentry', stageStartMs);
-
-    stageStartMs = getStartupProfileNowMs();
     lifecycle.markPhase('creating-server');
     const server = createServer();
     lifecycle.registerServer(server);
@@ -107,46 +91,27 @@ export async function startMcpServer(): Promise<void> {
     profiler.mark('bootstrapServer', stageStartMs);
 
     stageStartMs = getStartupProfileNowMs();
-    lifecycle.markPhase('starting-stdio-transport');
-    await startServer(server);
-    profiler.mark('startServer', stageStartMs);
-
-    const config = getConfig();
-    const enabledWorkflows = getRegisteredWorkflows();
-    setSentryRuntimeContext({
-      mode: 'mcp',
-      enabledWorkflows,
-      disableSessionDefaults: config.disableSessionDefaults,
-      disableXcodeAutoSync: config.disableXcodeAutoSync,
-      incrementalBuildsEnabled: config.incrementalBuildsEnabled,
-      debugEnabled: config.debug,
-      uiDebuggerGuardMode: config.uiDebuggerGuardMode,
-      xcodeIdeWorkflowEnabled: enabledWorkflows.includes('xcode-ide'),
-    });
+    if (transportMode === 'http') {
+      lifecycle.markPhase('starting-http-transport');
+      httpServerHandle = await startMcpHttpServer(server, {
+        port: options.port ?? 9090,
+        host: options.host ?? '127.0.0.1',
+        sessionTimeoutMs: options.sessionTimeoutMs ?? 0,
+      });
+      profiler.mark('startHttpServer', stageStartMs);
+    } else {
+      lifecycle.markPhase('starting-stdio-transport');
+      await startServer(server);
+      profiler.mark('startServer', stageStartMs);
+    }
 
     lifecycle.markPhase('running');
     const startupSnapshot = await lifecycle.getSnapshot();
     log('info', `[mcp-lifecycle] start ${JSON.stringify(startupSnapshot)}`);
-    recordMcpLifecycleMetric({
-      event: 'start',
-      phase: startupSnapshot.phase,
-      uptimeMs: startupSnapshot.uptimeMs,
-      rssBytes: startupSnapshot.rssBytes,
-      matchingMcpProcessCount: startupSnapshot.matchingMcpProcessCount,
-      activeOperationCount: startupSnapshot.activeOperationCount,
-      watcherRunning: startupSnapshot.watcherRunning,
-    });
-    for (const anomaly of startupSnapshot.anomalies) {
-      recordMcpLifecycleAnomalyMetric({
-        kind: anomaly,
-        phase: startupSnapshot.phase,
-      });
-    }
     if (startupSnapshot.anomalies.length > 0) {
       log(
         'warn',
         `[mcp-lifecycle] startup anomalies observed: ${startupSnapshot.anomalies.join(', ')}`,
-        { sentry: true },
       );
     }
 
@@ -166,10 +131,6 @@ export async function startMcpServer(): Promise<void> {
           lifecycle.markPhase('running');
         }
       });
-    setImmediate(() => {
-      enrichSentryContext();
-    });
-
     log('info', `XcodeBuildMCP server (version ${version}) started successfully`);
   } catch (error) {
     console.error('Fatal error in startMcpServer():', error);

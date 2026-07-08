@@ -50,19 +50,22 @@ jobs:
       - name: Validate structured JSON fixtures against schemas
         run: npm run test:schema-fixtures
 
+      # pkg.pr.new steps only run in the upstream repository: the pkg-pr-new
+      # GitHub App is installed there, and on forks the publish call fails
+      # with a 404 and turns an otherwise green CI run red.
       - name: Publish preview package for pull requests
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && github.repository == 'getsentry/XcodeBuildMCP'
         run: npx pkg-pr-new publish --comment=update
 
       - name: Publish preview package for main
         id: pkg_pr_new_main
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'getsentry/XcodeBuildMCP'
         run: |
           set -euo pipefail
           npx pkg-pr-new publish --comment=off --json=pkg-pr-new-main.json
 
       - name: Summarize pkg.new output for main
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && always()
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'getsentry/XcodeBuildMCP' && always()
         run: |
           {
             echo "## pkg.new preview for main"
@@ -78,7 +81,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload pkg.new metadata for main
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && always()
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'getsentry/XcodeBuildMCP' && always()
         uses: actions/upload-artifact@v4
         with:
           name: pkg-pr-new-main-${{ github.sha }}

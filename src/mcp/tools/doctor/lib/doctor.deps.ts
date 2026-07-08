@@ -182,7 +182,6 @@ export function createDoctorDependencies(executor: CommandExecutor): DoctorDepen
         'USER',
         'TMPDIR',
         'NODE_ENV',
-        'SENTRY_DISABLED',
         'AXE_PATH',
         'XBMCP_LAUNCH_JSON_WAIT_MS',
         'XCODEBUILDMCP_DEBUGGER_BACKEND',

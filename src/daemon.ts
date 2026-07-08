@@ -28,20 +28,6 @@ import {
   hasActiveRuntimeSessions,
 } from './daemon/idle-shutdown.ts';
 import { getDaemonActivitySnapshot } from './daemon/activity-registry.ts';
-import { getDefaultCommandExecutor } from './utils/command.ts';
-import { resolveAxeBinary } from './utils/axe/index.ts';
-import {
-  flushAndCloseSentry,
-  getAxeVersionMetadata,
-  getXcodeVersionMetadata,
-  initSentry,
-  recordBootstrapDurationMetric,
-  recordDaemonGaugeMetric,
-  recordDaemonLifecycleMetric,
-  setSentryRuntimeContext,
-} from './utils/sentry.ts';
-import { isXcodemakeBinaryAvailable, isXcodemakeEnabled } from './utils/xcodemake/index.ts';
-import { hydrateSentryDisabledEnvFromProjectConfig } from './utils/sentry-config.ts';
 
 async function checkExistingDaemon(socketPath: string): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
@@ -111,7 +97,6 @@ function resolveLogLevel(): ReturnType<typeof normalizeLogLevel> {
 }
 
 async function main(): Promise<void> {
-  const daemonBootstrapStart = Date.now();
   const result = await bootstrapRuntime({
     runtime: 'daemon',
     configOverrides: {
@@ -138,12 +123,6 @@ async function main(): Promise<void> {
     setLogLevel(resolveLogLevel() ?? 'info');
   }
 
-  await hydrateSentryDisabledEnvFromProjectConfig({
-    cwd: result.runtime.cwd,
-  });
-  initSentry({ mode: 'cli-daemon' });
-  recordDaemonLifecycleMetric('start');
-
   log('info', `[Daemon] xcodebuildmcp daemon ${version} starting...`);
 
   const socketPath = getSocketPath({
@@ -163,7 +142,6 @@ async function main(): Promise<void> {
   if (isRunning) {
     log('error', '[Daemon] Another daemon is already running for this workspace');
     console.error('Error: Daemon is already running for this workspace');
-    await flushAndCloseSentry(1000);
     process.exit(1);
   }
 
@@ -180,54 +158,6 @@ async function main(): Promise<void> {
     (workflowId) => !excludedWorkflows.includes(workflowId),
   );
   const xcodeIdeWorkflowEnabled = daemonWorkflows.includes('xcode-ide');
-  const axeBinary = resolveAxeBinary();
-  const axeAvailable = axeBinary !== null;
-  const axeSource: 'env' | 'bundled' | 'path' | 'unavailable' = axeBinary?.source ?? 'unavailable';
-  const xcodemakeAvailable = isXcodemakeBinaryAvailable();
-  const xcodemakeEnabled = isXcodemakeEnabled();
-  const baseSentryRuntimeContext = {
-    mode: 'cli-daemon' as const,
-    enabledWorkflows: daemonWorkflows,
-    disableSessionDefaults: result.runtime.config.disableSessionDefaults,
-    disableXcodeAutoSync: result.runtime.config.disableXcodeAutoSync,
-    incrementalBuildsEnabled: result.runtime.config.incrementalBuildsEnabled,
-    debugEnabled: result.runtime.config.debug,
-    uiDebuggerGuardMode: result.runtime.config.uiDebuggerGuardMode,
-    xcodeIdeWorkflowEnabled,
-    axeAvailable,
-    axeSource,
-    xcodemakeAvailable,
-    xcodemakeEnabled,
-  };
-  setSentryRuntimeContext(baseSentryRuntimeContext);
-
-  const enrichSentryMetadata = async (): Promise<void> => {
-    const commandExecutor = getDefaultCommandExecutor();
-    const xcodeVersion = await getXcodeVersionMetadata(async (command) => {
-      const result = await commandExecutor(command, 'Get Xcode Version');
-      return { success: result.success, output: result.output };
-    });
-    const xcodeAvailable = Boolean(
-      xcodeVersion.version ??
-        xcodeVersion.buildVersion ??
-        xcodeVersion.developerDir ??
-        xcodeVersion.xcodebuildPath,
-    );
-    const axeVersion = await getAxeVersionMetadata(async (command) => {
-      const result = await commandExecutor(command, 'Get AXe Version');
-      return { success: result.success, output: result.output };
-    }, axeBinary?.path);
-
-    setSentryRuntimeContext({
-      ...baseSentryRuntimeContext,
-      xcodeAvailable,
-      axeVersion,
-      xcodeDeveloperDir: xcodeVersion.developerDir,
-      xcodebuildPath: xcodeVersion.xcodebuildPath,
-      xcodeVersion: xcodeVersion.version,
-      xcodeBuildVersion: xcodeVersion.buildVersion,
-    });
-  };
 
   const catalog = await buildDaemonToolCatalogFromManifest({
     excludeWorkflows: excludedWorkflows,
@@ -256,7 +186,6 @@ async function main(): Promise<void> {
       `[Daemon] Idle shutdown enabled: timeout=${idleTimeoutMs}ms interval=${DEFAULT_DAEMON_IDLE_CHECK_INTERVAL_MS}ms`,
     );
   }
-  recordDaemonGaugeMetric('idle_timeout_ms', idleTimeoutMs);
 
   let isShuttingDown = false;
   let inFlightRequests = 0;
@@ -279,7 +208,6 @@ async function main(): Promise<void> {
       idleCheckTimer = null;
     }
 
-    recordDaemonLifecycleMetric('shutdown');
     log('info', '[Daemon] Shutting down...');
 
     // Close the server
@@ -291,24 +219,15 @@ async function main(): Promise<void> {
       removeStaleSocket(socketPath);
 
       log('info', '[Daemon] Cleanup complete');
-      void flushAndCloseSentry(2000).finally(() => {
-        process.exit(0);
-      });
+      process.exit(0);
     });
 
     // Force exit if server doesn't close in time
     setTimeout(() => {
       log('warn', '[Daemon] Forced shutdown after timeout');
       cleanupWorkspaceDaemonFiles(workspaceKey);
-      void flushAndCloseSentry(1000).finally(() => {
-        process.exit(1);
-      });
+      process.exit(1);
     }, 5000);
-  };
-
-  const emitRequestGauges = (): void => {
-    recordDaemonGaugeMetric('inflight_requests', inFlightRequests);
-    recordDaemonGaugeMetric('active_sessions', getDaemonActivitySnapshot().activeOperationCount);
   };
 
   const server = startDaemonServer({
@@ -324,23 +243,18 @@ async function main(): Promise<void> {
     onRequestStarted: () => {
       inFlightRequests += 1;
       markActivity();
-      emitRequestGauges();
     },
     onRequestFinished: () => {
       inFlightRequests = Math.max(0, inFlightRequests - 1);
       markActivity();
-      emitRequestGauges();
     },
   });
-  emitRequestGauges();
 
   if (idleTimeoutMs > 0) {
     idleCheckTimer = setInterval(() => {
       if (isShuttingDown) {
         return;
       }
-
-      emitRequestGauges();
 
       const idleForMs = Date.now() - lastActivityAt;
       if (idleForMs < idleTimeoutMs) {
@@ -383,27 +297,17 @@ async function main(): Promise<void> {
     writeLine(`Workspace: ${workspaceRoot}`);
     writeLine(`Socket: ${socketPath}`);
     writeLine(`Tools: ${catalog.tools.length}`);
-    recordBootstrapDurationMetric('cli-daemon', Date.now() - daemonBootstrapStart);
-
-    setImmediate(() => {
-      void enrichSentryMetadata().catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        log('warn', `[Daemon] Failed to enrich Sentry metadata: ${message}`);
-      });
-    });
   });
 
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 }
 
-main().catch(async (err) => {
-  recordDaemonLifecycleMetric('crash');
+main().catch((err) => {
   const message =
     err == null ? 'Unknown daemon error' : err instanceof Error ? err.message : String(err);
 
-  log('error', `Daemon error: ${message}`, { sentry: true });
+  log('error', `Daemon error: ${message}`);
   console.error('Daemon error:', message);
-  await flushAndCloseSentry(2000);
   process.exit(1);
 });

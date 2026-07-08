@@ -39,6 +39,15 @@ export interface ToolHandlerContext {
   attach: (image: ImageAttachment) => void;
   liveProgressEnabled: boolean;
   streamingFragmentsEnabled: boolean;
+  /**
+   * Emits an out-of-band MCP `notifications/progress` for the current tool call.
+   * Set only when the MCP client supplied a `progressToken`; undefined for CLI/daemon
+   * runtimes. Keeps the transport's idle timers warm during long, otherwise-silent
+   * operations (see docs/MCP_HTTP_TRANSPORT_PLAN.md — Layer A).
+   */
+  sendProgress?: (params: { progress: number; total?: number; message?: string }) => void;
+  /** Abort signal for the current request; used to cancel long-running child processes. */
+  signal?: AbortSignal;
   nextStepParams?: NextStepParamsMap;
   nextSteps?: NextStep[];
   structuredOutput?: StructuredToolOutput;

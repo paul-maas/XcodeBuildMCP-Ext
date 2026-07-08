@@ -26,7 +26,6 @@ import { createDoctorDependencies } from '../../mcp/tools/doctor/lib/doctor.deps
 
 interface SetupSelection {
   debug: boolean;
-  sentryDisabled: boolean;
   enabledWorkflows: string[];
   projectPath?: string;
   workspacePath?: string;
@@ -168,11 +167,6 @@ function getChangedFields(
 
   const fieldComparisons: Array<{ label: string; beforeValue: unknown; afterValue: unknown }> = [
     { label: 'debug', beforeValue: beforeConfig?.debug, afterValue: afterConfig.debug },
-    {
-      label: 'sentryDisabled',
-      beforeValue: beforeConfig?.sentryDisabled,
-      afterValue: afterConfig.sentryDisabled,
-    },
     {
       label: 'enabledWorkflows',
       beforeValue: beforeConfig?.enabledWorkflows,
@@ -683,15 +677,6 @@ async function collectSetupSelection(
     defaultValue: existingConfig?.debug ?? false,
   });
 
-  showPromptHelp(
-    'Disable Sentry telemetry to stop sending anonymous runtime diagnostics for XcodeBuildMCP itself (not your app, project code, or build errors).',
-    deps.quietOutput,
-  );
-  const sentryDisabled = await deps.prompter.confirm({
-    message: 'Disable Sentry telemetry?',
-    defaultValue: existingConfig?.sentryDisabled ?? false,
-  });
-
   const enabledWorkflows = await selectWorkflowIds({
     debug,
     existingConfig,
@@ -745,7 +730,6 @@ async function collectSetupSelection(
 
   return {
     debug,
-    sentryDisabled,
     enabledWorkflows,
     projectPath: projectChoice.kind === 'project' ? projectChoice.absolutePath : undefined,
     workspacePath: projectChoice.kind === 'workspace' ? projectChoice.absolutePath : undefined,
@@ -767,10 +751,6 @@ function selectionToMcpConfigJson(selection: SetupSelection): string {
 
   if (selection.debug) {
     env.XCODEBUILDMCP_DEBUG = 'true';
-  }
-
-  if (selection.sentryDisabled) {
-    env.XCODEBUILDMCP_SENTRY_DISABLED = 'true';
   }
 
   if (selection.workspacePath) {
@@ -897,7 +877,6 @@ export async function runSetupWizard(deps?: Partial<SetupDependencies>): Promise
     patch: {
       enabledWorkflows: selection.enabledWorkflows,
       debug: selection.debug,
-      sentryDisabled: selection.sentryDisabled,
       sessionDefaults: {
         projectPath: persistedProjectPath,
         workspacePath: persistedWorkspacePath,

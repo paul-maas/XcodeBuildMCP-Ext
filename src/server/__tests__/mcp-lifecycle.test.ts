@@ -152,6 +152,30 @@ describe('mcp lifecycle coordinator', () => {
     expect(suppressSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('ignores stdio disconnects in http mode but still handles signals', async () => {
+    const processRef = new TestProcess();
+    const onShutdown = vi.fn().mockResolvedValue(undefined);
+    const coordinator = createMcpLifecycleCoordinator({
+      commandExecutor: createMockExecutor({ output: '' }),
+      processRef,
+      onShutdown,
+    });
+
+    coordinator.attachProcessHandlers({ mode: 'http' });
+    expect(processRef.stdout.listenerCount('error')).toBe(0);
+    expect(processRef.stderr.listenerCount('error')).toBe(0);
+    processRef.stdin.emit('end');
+    processRef.stdin.emit('close');
+    expect(onShutdown).not.toHaveBeenCalled();
+
+    processRef.emit('SIGTERM');
+    await vi.waitFor(() => {
+      expect(onShutdown).toHaveBeenCalledTimes(1);
+    });
+
+    expect(onShutdown.mock.calls[0]?.[0]?.reason).toBe('sigterm');
+  });
+
   it('maps broken stderr pipes to shutdowns', async () => {
     const processRef = new TestProcess();
     const onShutdown = vi.fn().mockResolvedValue(undefined);

@@ -389,12 +389,6 @@ function createDoctorChecks(data: DoctorCollectedData): DoctorResult['checks'] {
     });
   }
 
-  checks.push({
-    name: 'sentry',
-    status: 'ok',
-    message: `Enabled: ${data.doctorInfo.environmentVariables.SENTRY_DISABLED !== 'true' ? 'Yes' : 'No'}`,
-  });
-
   return checks;
 }
 
@@ -704,13 +698,6 @@ export async function runDoctor(params: DoctorParams, deps: DoctorDependencies) 
         `Build Tools: ${buildToolsAvailable ? 'Available' : 'Not available'}`,
         `UI Automation Tools: ${doctorInfo.features.axe.uiAutomationSupported ? 'Available' : 'Not available'}`,
         `Incremental Build Support: ${incrementalStatus}`,
-      ]),
-    );
-
-    // Sentry
-    items.push(
-      doctorSection('Sentry', [
-        `Sentry enabled: ${doctorInfo.environmentVariables.SENTRY_DISABLED !== 'true' ? 'Yes' : 'No'}`,
       ]),
     );
 

@@ -7,12 +7,6 @@ import { stopAllDeviceLogCaptures } from '../utils/log-capture/device-log-sessio
 import { stopOwnedSimulatorLaunchOsLogSessions } from '../utils/log-capture/simulator-launch-oslog-sessions.ts';
 import { stopAllVideoCaptureSessions } from '../utils/video_capture.ts';
 import { stopAllTrackedProcesses } from '../mcp/tools/swift-package/active-processes.ts';
-import {
-  captureMcpShutdownSummary,
-  flushSentry,
-  type FlushSentryOutcome,
-} from '../utils/sentry.ts';
-import { sealSentryCapture } from '../utils/shutdown-state.ts';
 import { toErrorMessage } from '../utils/errors.ts';
 import type { McpLifecycleSnapshot, McpShutdownReason } from './mcp-lifecycle.ts';
 import { isTransportDisconnectReason } from './mcp-lifecycle.ts';
@@ -22,8 +16,6 @@ const DEFAULT_SERVER_CLOSE_TIMEOUT_MS = 1000;
 const STEP_TIMEOUT_MS = 1000;
 const STEP_TIMEOUT_HEADROOM_MS = 100;
 const DEBUGGER_STEP_BASE_TIMEOUT_MS = 2200;
-const DISCONNECT_FLUSH_TIMEOUT_MS = 250;
-const DEFAULT_FLUSH_TIMEOUT_MS = 1500;
 
 export type ShutdownStepStatus = 'completed' | 'timed_out' | 'failed' | 'skipped';
 
@@ -49,7 +41,6 @@ type RunStepRaceOutcome<T> =
 export interface McpShutdownResult {
   exitCode: number;
   transportDisconnected: boolean;
-  sentryFlush: FlushSentryOutcome;
   steps: ShutdownStepResult[];
 }
 
@@ -138,7 +129,6 @@ export async function runMcpShutdown(input: {
   snapshot: McpLifecycleSnapshot;
   server: Pick<McpServer, 'close'> | null;
 }): Promise<McpShutdownResult> {
-  const shutdownStartedAt = Date.now();
   const exitCode = buildExitCode(input.reason);
   const transportDisconnected = isTransportDisconnectReason(input.reason);
   const steps: ShutdownStepResult[] = [];
@@ -224,34 +214,9 @@ export async function runMcpShutdown(input: {
     pushStep(cleanupStep.name, outcome);
   }
 
-  const triggerError = input.error === undefined ? undefined : toErrorMessage(input.error);
-  const cleanupFailureCount = steps.filter(
-    (step) => step.status === 'failed' || step.status === 'timed_out',
-  ).length;
-
-  captureMcpShutdownSummary({
-    reason: input.reason,
-    phase: input.snapshot.phase,
-    exitCode,
-    transportDisconnected,
-    triggerError,
-    cleanupFailureCount,
-    shutdownDurationMs: Date.now() - shutdownStartedAt,
-    snapshot: input.snapshot as unknown as Record<string, unknown>,
-    steps: steps as unknown as Array<Record<string, unknown>>,
-  });
-
-  sealSentryCapture();
-
-  const flushTimeout = transportDisconnected
-    ? DISCONNECT_FLUSH_TIMEOUT_MS
-    : DEFAULT_FLUSH_TIMEOUT_MS;
-  const sentryFlush = await flushSentry(flushTimeout);
-
   return {
     exitCode,
     transportDisconnected,
-    sentryFlush,
     steps,
   };
 }

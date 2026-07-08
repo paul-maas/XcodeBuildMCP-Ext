@@ -34,7 +34,6 @@ function createDeps(overrides?: Partial<DoctorDependencies>): DoctorDependencies
           USER: 'testuser',
           TMPDIR: '/tmp',
           NODE_ENV: 'test',
-          SENTRY_DISABLED: 'false',
         };
         return x;
       },
@@ -335,7 +334,6 @@ describe('doctor tool', () => {
               USER: 'testuser',
               TMPDIR: '/tmp',
               NODE_ENV: 'test',
-              SENTRY_DISABLED: 'true',
             };
             return x;
           },

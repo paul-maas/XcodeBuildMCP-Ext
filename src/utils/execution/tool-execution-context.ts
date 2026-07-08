@@ -3,16 +3,19 @@ import type { ToolAttachment, StreamingExecutionContext } from '../../types/tool
 
 export interface StreamingExecutionContextOptions {
   liveProgressEnabled?: boolean;
+  signal?: AbortSignal;
   onFragment?: (fragment: DomainFragment) => void;
 }
 
 export class DefaultStreamingExecutionContext implements StreamingExecutionContext {
   readonly liveProgressEnabled: boolean;
+  readonly signal?: AbortSignal;
   private readonly attachments: ToolAttachment[] = [];
   private readonly fragmentCallback?: (fragment: DomainFragment) => void;
 
   constructor(options: StreamingExecutionContextOptions = {}) {
     this.liveProgressEnabled = options.liveProgressEnabled ?? true;
+    this.signal = options.signal;
     this.fragmentCallback = options.onFragment;
   }
 

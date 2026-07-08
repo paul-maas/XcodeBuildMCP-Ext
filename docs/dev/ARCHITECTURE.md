@@ -31,7 +31,6 @@ XcodeBuildMCP is a Model Context Protocol (MCP) server that exposes Xcode operat
 
 1. **Initialization**
    - The `xcodebuildmcp` executable, as defined in `package.json`, points to the compiled `build/cli.js` (CLI entrypoint from `src/cli.ts`); the MCP server starts via the `mcp` subcommand which invokes `src/index.ts`.
-   - Sentry initialized for error tracking (optional)
    - Version information loaded from `package.json`
 
 2. **Server Creation**
@@ -81,7 +80,7 @@ Tools are self-contained units that export a standardized interface. They don't 
 
 ### 4. **Feature Isolation**
 - Experimental features behind environment flags
-- Optional dependencies (Sentry, xcodemake) gracefully degrade
+- Optional dependencies (xcodemake) gracefully degrade
 - Tool directory structure enables workflow-specific organization
 
 ### 5. **Type Safety Throughout**
@@ -155,7 +154,6 @@ This rule prevents regression to the previous barrel import pattern and ensures 
 
 #### `src/index.ts`
 Main server entry point responsible for:
-- Sentry initialization (if enabled)
 - xcodemake availability check
 - Server creation and startup
 - Process lifecycle management (SIGTERM, SIGINT)
@@ -570,6 +568,3 @@ The guide covers:
 
 - Sensitive information scrubbed from errors
 - Stack traces limited to application code
-- Sentry capture is explicit (`{ sentry: true }`) and limited to internal runtime failures
-- MCP wrapper auto-instrumentation is enabled for MCP observability, with tool input/output capture disabled (`recordInputs: false`, `recordOutputs: false`)
-- Request/user context and user home paths are scrubbed before telemetry is sent

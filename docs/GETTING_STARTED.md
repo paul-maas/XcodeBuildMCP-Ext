@@ -128,7 +128,7 @@ Codex uses TOML for MCP configuration. Add this to `~/.codex/config.toml`:
 [mcp_servers.XcodeBuildMCP]
 command = "npx"
 args = ["-y", "xcodebuildmcp@latest", "mcp"]
-env = { "XCODEBUILDMCP_SENTRY_DISABLED" = "false" }
+env = { "XCODEBUILDMCP_DEBUG" = "false" }
 ```
 
 If you see tool calls timing out (for example, `timed out awaiting tools/call after 60s`), increase the timeout:
@@ -146,7 +146,7 @@ https://github.com/openai/codex/blob/main/docs/config.md#connecting-to-mcp-serve
 claude mcp add XcodeBuildMCP -- npx -y xcodebuildmcp@latest mcp
 
 # Or with environment variables
-claude mcp add XcodeBuildMCP -e XCODEBUILDMCP_SENTRY_DISABLED=false -- npx -y xcodebuildmcp@latest mcp
+claude mcp add XcodeBuildMCP -e XCODEBUILDMCP_DEBUG=false -- npx -y xcodebuildmcp@latest mcp
 ```
 
 Note: XcodeBuildMCP requests xcodebuild to skip macro validation to avoid Swift Macro build errors.

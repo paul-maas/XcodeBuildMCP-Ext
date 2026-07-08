@@ -5,7 +5,7 @@
 - [Configuration and options](CONFIGURATION.md)
 - [Tools reference (all workflows/tools)](TOOLS.md)
 - [Troubleshooting and doctor](TROUBLESHOOTING.md)
-- [Privacy and telemetry](PRIVACY.md)
+- [Privacy](PRIVACY.md)
 - [Demos](DEMOS.md)
 
 ## User guides

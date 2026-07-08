@@ -40,4 +40,4 @@ If tools do not appear, verify `XCODEBUILDMCP_ENABLED_WORKFLOWS` includes the re
 ## Related docs
 - Configuration options: [CONFIGURATION.md](CONFIGURATION.md)
 - Tools reference: [TOOLS.md](TOOLS.md)
-- Privacy and telemetry: [PRIVACY.md](PRIVACY.md)
+- Privacy: [PRIVACY.md](PRIVACY.md)

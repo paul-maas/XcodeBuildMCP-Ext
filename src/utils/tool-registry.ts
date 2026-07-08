@@ -1,3 +1,4 @@
+import * as z from 'zod';
 import { type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { server } from '../server/server-state.ts';
 import type { ToolResponse } from '../types/common.ts';
@@ -11,11 +12,25 @@ import { postProcessSession } from '../runtime/tool-invoker.ts';
 import type { PredicateContext } from '../visibility/predicate-types.ts';
 import { selectWorkflowsForMcp, isToolExposedForRuntime } from '../visibility/exposure.ts';
 import { getConfig } from './config-store.ts';
-import { recordInternalErrorMetric, recordToolInvocationMetric } from './sentry.ts';
 import type { ToolHandlerContext } from '../rendering/types.ts';
 import { createRenderSession } from '../rendering/render.ts';
 import { toStructuredEnvelope } from './structured-output-envelope.ts';
 import { getMcpOutputSchemaForRegistration } from '../core/structured-output-schema.ts';
+import { startMcpProgressPump } from './tool-execution-compat.ts';
+
+// MCP registrations reject unknown argument keys loudly instead of zod's
+// default silent stripping. With session defaults enabled the target fields
+// (projectPath, scheme, simulatorId, ...) are absent from public schemas, and
+// silently dropping them sent work to the session-default project instead of
+// the one the client named. The error text teaches the session-defaults flow.
+function buildStrictMcpInputSchema(shape: Record<string, z.ZodType>): z.ZodObject {
+  return z.strictObject(shape, {
+    error: (issue) =>
+      issue.code === 'unrecognized_keys'
+        ? `Unknown parameter(s): ${issue.keys.join(', ')}. Target selection (project, scheme, simulator, device) is managed via session defaults, not per-call arguments: switch with session_set_defaults (optionally profile + createIfNotExists for a temporary target such as a test fixture), inspect with session_show_defaults, revert with session_use_defaults_profile { global: true }.`
+        : undefined,
+  });
+}
 
 function sessionToToolResponse(session: ReturnType<typeof createRenderSession>): ToolResponse {
   const text = session.finalize();
@@ -168,14 +183,6 @@ export function createCustomWorkflowsFromConfig(
   return { workflows, warnings };
 }
 
-function emitConfigWarningMetric(kind: 'unknown_workflow' | 'invalid_custom_workflow'): void {
-  recordInternalErrorMetric({
-    component: 'config/workflow-selection',
-    runtime: 'mcp',
-    errorKind: kind,
-  });
-}
-
 export function getRuntimeRegistration(): RuntimeToolInfo | null {
   if (registryState.tools.size === 0 && registryState.enabledWorkflows.size === 0) {
     return null;
@@ -216,7 +223,6 @@ export async function applyWorkflowSelectionFromManifest(
   const customSelection = createCustomWorkflowsFromConfig(manifest, ctx.config.customWorkflows);
   for (const warning of customSelection.warnings) {
     log('warning', warning);
-    emitConfigWarningMetric('invalid_custom_workflow');
   }
   const allWorkflows = [...manifest.workflows.values(), ...customSelection.workflows];
 
@@ -235,7 +241,6 @@ export async function applyWorkflowSelectionFromManifest(
       'warning',
       `[config] Ignoring unknown workflow(s): ${uniqueUnknownRequestedWorkflows.join(', ')}`,
     );
-    emitConfigWarningMetric('unknown_workflow');
   }
 
   const desiredToolNames = new Set<string>();
@@ -297,22 +302,41 @@ export async function applyWorkflowSelectionFromManifest(
           toolName,
           {
             description: toolManifest.description ?? '',
-            inputSchema: toolModule.schema,
+            inputSchema: buildStrictMcpInputSchema(toolModule.schema),
             ...(outputSchema ? { outputSchema } : {}),
             annotations: toolManifest.annotations,
           },
-          async (args: unknown): Promise<ToolResponse> => {
-            const startedAt = Date.now();
+          async (args: unknown, extra): Promise<ToolResponse> => {
+            const session = createRenderSession('text');
+            const progressToken = extra._meta?.progressToken;
+            const sendProgress =
+              progressToken !== undefined
+                ? (params: { progress: number; total?: number; message?: string }): void => {
+                    void extra
+                      .sendNotification({
+                        method: 'notifications/progress',
+                        params: { progressToken, ...params },
+                      })
+                      .catch((error) => {
+                        log('warn', `Progress notification failed: ${String(error)}`);
+                      });
+                  }
+                : undefined;
+            const ctx: ToolHandlerContext = {
+              liveProgressEnabled: false,
+              streamingFragmentsEnabled: false,
+              emit: (fragment) => {
+                session.emit(fragment);
+              },
+              attach: session.attach,
+              sendProgress,
+              signal: extra.signal,
+            };
+            // Keep the transport idle timers warm during long, silent tool calls
+            // (see docs/MCP_HTTP_TRANSPORT_PLAN.md — Layer A). No-op when the client
+            // did not request progress.
+            const progressPump = sendProgress ? startMcpProgressPump(sendProgress) : undefined;
             try {
-              const session = createRenderSession('text');
-              const ctx: ToolHandlerContext = {
-                liveProgressEnabled: false,
-                streamingFragmentsEnabled: false,
-                emit: (fragment) => {
-                  session.emit(fragment);
-                },
-                attach: session.attach,
-              };
               await toolModule.handler(args as Record<string, unknown>, ctx);
 
               if (ctx.structuredOutput) {
@@ -331,31 +355,9 @@ export async function applyWorkflowSelectionFromManifest(
                 });
               }
 
-              const response = sessionToToolResponse(session);
-
-              recordToolInvocationMetric({
-                toolName,
-                runtime: 'mcp',
-                transport: 'direct',
-                outcome: 'completed',
-                durationMs: Date.now() - startedAt,
-              });
-
-              return response;
-            } catch (error) {
-              recordInternalErrorMetric({
-                component: 'mcp-tool-registry',
-                runtime: 'mcp',
-                errorKind: error instanceof Error ? error.name || 'Error' : typeof error,
-              });
-              recordToolInvocationMetric({
-                toolName,
-                runtime: 'mcp',
-                transport: 'direct',
-                outcome: 'infra_error',
-                durationMs: Date.now() - startedAt,
-              });
-              throw error;
+              return sessionToToolResponse(session);
+            } finally {
+              progressPump?.stop();
             }
           },
         );

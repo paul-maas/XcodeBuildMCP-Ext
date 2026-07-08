@@ -7,7 +7,6 @@ export const runtimeConfigFileSchema = z
     enabledWorkflows: z.union([z.array(z.string()), z.string()]).optional(),
     customWorkflows: z.record(z.string(), z.union([z.array(z.string()), z.string()])).optional(),
     debug: z.boolean().optional(),
-    sentryDisabled: z.boolean().optional(),
     experimentalWorkflowDiscovery: z.boolean().optional(),
     disableSessionDefaults: z.boolean().optional(),
     disableXcodeAutoSync: z.boolean().optional(),

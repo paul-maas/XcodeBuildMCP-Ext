@@ -343,7 +343,6 @@ describe('project-config', () => {
         patch: {
           enabledWorkflows: ['simulator', 'ui-automation'],
           debug: true,
-          sentryDisabled: true,
           sessionDefaults: {
             workspacePath: './MyApp.xcworkspace',
             scheme: 'MyApp',
@@ -357,13 +356,11 @@ describe('project-config', () => {
       const parsed = parseYaml(writes[0].content) as {
         enabledWorkflows?: string[];
         debug?: boolean;
-        sentryDisabled?: boolean;
         sessionDefaults?: Record<string, unknown>;
       };
 
       expect(parsed.enabledWorkflows).toEqual(['simulator', 'ui-automation']);
       expect(parsed.debug).toBe(true);
-      expect(parsed.sentryDisabled).toBe(true);
       expect(parsed.sessionDefaults?.workspacePath).toBe('./MyApp.xcworkspace');
       expect(parsed.sessionDefaults?.projectPath).toBeUndefined();
     });

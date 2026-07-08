@@ -10,6 +10,24 @@ import type { CommandExecutor, CommandResponse, CommandExecOptions } from './Com
 export type { CommandExecutor, CommandResponse, CommandExecOptions } from './CommandExecutor.ts';
 export type { FileSystemExecutor } from './FileSystemExecutor.ts';
 
+/**
+ * Ensure common tool directories (homebrew, MacPorts, user-local) are on PATH
+ * so spawned commands like xcodegen, create-dmg, etc. are found regardless of
+ * how the MCP server process was launched (stdio client, HTTP transport, Docker).
+ */
+const EXTRA_PATH_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', '/opt/local/bin'];
+
+// Grace period between SIGTERM and SIGKILL for aborted process groups.
+// xcodebuild catches SIGTERM and runs its own cleanup; revisit if flake logs
+// show truncated xcresult bundles.
+const KILL_GRACE_MS = 10_000;
+const enrichedPath: string = (() => {
+  const current = process.env.PATH ?? '';
+  const currentDirs = current.split(':');
+  const missing = EXTRA_PATH_DIRS.filter((d) => existsSync(d) && !currentDirs.includes(d));
+  return missing.length ? `${missing.join(':')}:${current}` : current;
+})();
+
 async function defaultExecutor(
   command: string[],
   logPrefix?: string,
@@ -54,8 +72,13 @@ async function defaultExecutor(
 
     const spawnOpts: Parameters<typeof spawn>[2] = {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: opts?.env ? { ...process.env, ...opts.env } : process.env,
+      env: { ...process.env, PATH: enrichedPath, ...opts?.env },
       cwd: opts?.cwd,
+      // OS-level detachment (own process group) is driven solely by the
+      // processGroup option; the positional `detached` parameter only changes
+      // when the promise resolves (see CommandExecutor.ts).
+      detached: opts?.processGroup === true,
+      signal: opts?.signal,
     };
 
     log('debug', `defaultExecutor PATH: ${process.env.PATH ?? ''}`);
@@ -73,7 +96,47 @@ async function defaultExecutor(
       log('error', `Spawn error details: ${JSON.stringify(errorDetails, null, 2)}`);
     };
 
+    // Abort → SIGTERM the whole process group, escalating to SIGKILL after a
+    // grace period. spawnOpts.signal already terminates the direct child; the
+    // group kill reaches its descendants (xcrun → xcodebuild → test runners).
+    let removeAbortListener: (() => void) | undefined;
+    let killGroupIfAlreadyAborted: (() => void) | undefined;
+    if (opts?.signal && opts.processGroup === true) {
+      const abortSignal = opts.signal;
+      const killProcessGroup = (killSignal: NodeJS.Signals): void => {
+        if (childProcess.pid === undefined) {
+          return;
+        }
+        try {
+          process.kill(-childProcess.pid, killSignal);
+        } catch {
+          // Process group already gone.
+        }
+      };
+      const onAbort = (): void => {
+        killProcessGroup('SIGTERM');
+        const escalation = setTimeout(() => {
+          if (childProcess.exitCode === null && childProcess.signalCode === null) {
+            killProcessGroup('SIGKILL');
+          }
+        }, KILL_GRACE_MS);
+        escalation.unref();
+        childProcess.once('exit', () => clearTimeout(escalation));
+      };
+      if (abortSignal.aborted) {
+        killGroupIfAlreadyAborted = onAbort;
+      } else {
+        // Registered BEFORE spawn(): Node's own spawn-signal listener emits
+        // AbortError synchronously during the abort dispatch, which settles
+        // the promise; registering after spawn would let that settle path
+        // remove this listener mid-dispatch, before it ever fired.
+        abortSignal.addEventListener('abort', onAbort, { once: true });
+        removeAbortListener = (): void => abortSignal.removeEventListener('abort', onAbort);
+      }
+    }
+
     const childProcess = spawn(executable, args, spawnOpts);
+    killGroupIfAlreadyAborted?.();
 
     let stdout = '';
     let stderr = '';
@@ -107,6 +170,7 @@ async function defaultExecutor(
       settled = true;
       clearExitSettleTimer();
       detachStreamListeners();
+      removeAbortListener?.();
       logSpawnError(err);
       reject(err);
     };
@@ -118,6 +182,7 @@ async function defaultExecutor(
       settled = true;
       clearExitSettleTimer();
       detachStreamListeners();
+      removeAbortListener?.();
 
       const success = code === 0;
       const response: CommandResponse = {

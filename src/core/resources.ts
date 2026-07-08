@@ -47,9 +47,6 @@ export async function loadResources(ctx: PredicateContext): Promise<Map<string, 
       log(
         'error',
         `[infra/resources] failed to import resource module '${resource.module}': ${err}`,
-        {
-          sentry: true,
-        },
       );
       continue;
     }

@@ -186,7 +186,7 @@ describe('xcodebuild-event-parser', () => {
       onEvent: (event) => events.push(event),
       onUnrecognizedLine: (line) => unrecognizedLines.push(line),
     });
-    const line = '2026-04-23 12:00:00.000 xcodebuild[123:456] error: IDE operation failed';
+    const line = 'Some build phase error: command failed with exit code 1';
 
     parser.onStderr(`${line}\n`);
     parser.flush();
@@ -202,6 +202,25 @@ describe('xcodebuild-event-parser', () => {
       message: line,
       rawLine: line,
     });
+  });
+
+  it('does not emit error events for os_log / runtime console lines', () => {
+    const events: DomainFragment[] = [];
+    const parser = createXcodebuildEventParser({
+      operation: 'BUILD',
+      onEvent: (event) => events.push(event),
+    });
+    // Runtime logging from the app under test and from xcodebuild's own tooling shares
+    // the "Process[pid:tid] ... error:" shape; it must not be surfaced as a build error.
+    const line = '2026-04-23 12:00:00.000 xcodebuild[123:456] error: IDE operation failed';
+
+    parser.onStderr(`${line}\n`);
+    parser.flush();
+
+    const errors = events.filter(
+      (e) => e.fragment === 'compiler-diagnostic' && e.severity === 'error',
+    );
+    expect(errors).toEqual([]);
   });
 
   it('emits swift-testing issue fallbacks as test failures with the full raw line', () => {

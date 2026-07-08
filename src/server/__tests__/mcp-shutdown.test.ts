@@ -25,9 +25,6 @@ const mocks = vi.hoisted(() => ({
     errorCount: 0,
     errors: [],
   })),
-  captureMcpShutdownSummary: vi.fn(),
-  flushSentry: vi.fn(async () => 'flushed'),
-  sealSentryCapture: vi.fn(),
 }));
 
 vi.mock('../../utils/xcode-state-watcher.ts', () => ({
@@ -54,13 +51,6 @@ vi.mock('../../utils/video_capture.ts', () => ({
 vi.mock('../../mcp/tools/swift-package/active-processes.ts', () => ({
   stopAllTrackedProcesses: mocks.stopAllTrackedProcesses,
 }));
-vi.mock('../../utils/sentry.ts', () => ({
-  captureMcpShutdownSummary: mocks.captureMcpShutdownSummary,
-  flushSentry: mocks.flushSentry,
-}));
-vi.mock('../../utils/shutdown-state.ts', () => ({
-  sealSentryCapture: mocks.sealSentryCapture,
-}));
 
 import { runMcpShutdown } from '../mcp-shutdown.ts';
 
@@ -73,7 +63,7 @@ describe('runMcpShutdown', () => {
     vi.clearAllMocks();
   });
 
-  it('runs cleanup, captures summary, seals capture, and flushes', async () => {
+  it('runs cleanup steps and returns a clean exit code', async () => {
     const result = await runMcpShutdown({
       reason: 'sigterm',
       snapshot: {
@@ -104,9 +94,6 @@ describe('runMcpShutdown', () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(mocks.captureMcpShutdownSummary).toHaveBeenCalledTimes(1);
-    expect(mocks.sealSentryCapture).toHaveBeenCalledTimes(1);
-    expect(mocks.flushSentry).toHaveBeenCalledTimes(1);
     expect(mocks.stopXcodeStateWatcher).toHaveBeenCalledTimes(1);
     expect(mocks.shutdownXcodeToolsBridge).toHaveBeenCalledTimes(1);
     expect(mocks.disposeAll).toHaveBeenCalledTimes(1);

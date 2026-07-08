@@ -1,5 +1,5 @@
 /**
- * Tests for build-utils Sentry classification logic
+ * Tests for build-utils error classification and command construction
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
@@ -21,7 +21,7 @@ function createMockPipeline(): XcodebuildPipeline {
   } as unknown as XcodebuildPipeline;
 }
 
-describe('build-utils Sentry Classification', () => {
+describe('build-utils error classification', () => {
   afterEach(() => {
     vi.clearAllMocks();
   });
@@ -38,7 +38,7 @@ describe('build-utils Sentry Classification', () => {
   };
 
   describe('Exit Code 64 Classification (MCP Error)', () => {
-    it('should trigger Sentry logging for exit code 64 (invalid arguments)', async () => {
+    it('should return an error result for exit code 64 (invalid arguments)', async () => {
       const mockExecutor = createMockExecutor({
         success: false,
         error: 'xcodebuild: error: invalid option',
@@ -61,7 +61,7 @@ describe('build-utils Sentry Classification', () => {
   });
 
   describe('Other Exit Codes Classification (User Error)', () => {
-    it('should not trigger Sentry logging for exit code 65 (user error)', async () => {
+    it('should return an error result for exit code 65 (user error)', async () => {
       const mockExecutor = createMockExecutor({
         success: false,
         error: 'Scheme TestScheme was not found',
@@ -82,7 +82,7 @@ describe('build-utils Sentry Classification', () => {
       expect(result.content[0].text).toContain('Test Build build failed for scheme TestScheme');
     });
 
-    it('should not trigger Sentry logging for exit code 66 (file not found)', async () => {
+    it('should return an error result for exit code 66 (file not found)', async () => {
       const mockExecutor = createMockExecutor({
         success: false,
         error: 'project.xcodeproj cannot be opened',
@@ -103,7 +103,7 @@ describe('build-utils Sentry Classification', () => {
       expect(result.content[0].text).toContain('Test Build build failed for scheme TestScheme');
     });
 
-    it('should not trigger Sentry logging for exit code 70 (destination error)', async () => {
+    it('should return an error result for exit code 70 (destination error)', async () => {
       const mockExecutor = createMockExecutor({
         success: false,
         error: 'Unable to find a destination matching the provided destination specifier',
@@ -124,7 +124,7 @@ describe('build-utils Sentry Classification', () => {
       expect(result.content[0].text).toContain('Test Build build failed for scheme TestScheme');
     });
 
-    it('should not trigger Sentry logging for exit code 1 (general build failure)', async () => {
+    it('should return an error result for exit code 1 (general build failure)', async () => {
       const mockExecutor = createMockExecutor({
         success: false,
         error: 'Build failed with errors',
@@ -146,8 +146,8 @@ describe('build-utils Sentry Classification', () => {
     });
   });
 
-  describe('Spawn Error Classification (Environment Error)', () => {
-    it('should not trigger Sentry logging for ENOENT spawn error', async () => {
+  describe('Spawn error handling', () => {
+    it('should return an error result for ENOENT spawn error', async () => {
       const spawnError = new Error('spawn xcodebuild ENOENT') as NodeJS.ErrnoException;
       spawnError.code = 'ENOENT';
 
@@ -173,7 +173,7 @@ describe('build-utils Sentry Classification', () => {
       );
     });
 
-    it('should not trigger Sentry logging for EACCES spawn error', async () => {
+    it('should return an error result for EACCES spawn error', async () => {
       const spawnError = new Error('spawn xcodebuild EACCES') as NodeJS.ErrnoException;
       spawnError.code = 'EACCES';
 
@@ -199,7 +199,7 @@ describe('build-utils Sentry Classification', () => {
       );
     });
 
-    it('should not trigger Sentry logging for EPERM spawn error', async () => {
+    it('should return an error result for EPERM spawn error', async () => {
       const spawnError = new Error('spawn xcodebuild EPERM') as NodeJS.ErrnoException;
       spawnError.code = 'EPERM';
 
@@ -225,7 +225,7 @@ describe('build-utils Sentry Classification', () => {
       );
     });
 
-    it('should trigger Sentry logging for non-spawn exceptions', async () => {
+    it('should return an error result for non-spawn exceptions', async () => {
       const otherError = new Error('Unexpected internal error');
 
       const mockExecutor = createMockExecutor({
@@ -251,8 +251,8 @@ describe('build-utils Sentry Classification', () => {
     });
   });
 
-  describe('Success Case (No Sentry Logging)', () => {
-    it('should not trigger any error logging for successful builds', async () => {
+  describe('Success Case', () => {
+    it('should return a success result for successful builds', async () => {
       const mockExecutor = createMockExecutor({
         success: true,
         output: 'BUILD SUCCEEDED',
@@ -275,7 +275,7 @@ describe('build-utils Sentry Classification', () => {
   });
 
   describe('Exit Code Undefined Cases', () => {
-    it('should not trigger Sentry logging when exitCode is undefined', async () => {
+    it('should return an error result when exitCode is undefined', async () => {
       const mockExecutor = createMockExecutor({
         success: false,
         error: 'Some error without exit code',

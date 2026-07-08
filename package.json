@@ -5,6 +5,9 @@
   "iOSTemplateVersion": "v1.0.8",
   "macOSTemplateVersion": "v1.0.5",
   "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "exports": {
     ".": "./build/cli.js",
     "./package.json": "./package.json"
@@ -23,7 +26,6 @@
     "hooks:install": "node scripts/install-git-hooks.js",
     "generate:version": "npx tsx scripts/generate-version.ts",
     "repro:mcp-lifecycle-leak": "npm run build && npx tsx scripts/repro-mcp-lifecycle-leak.ts",
-    "repro:sentry-mcp-teardown": "cd repros/sentry-mcp-teardown && npm run harness",
     "bundle:axe": "scripts/bundle-axe.sh",
     "package:macos": "scripts/package-macos-portable.sh",
     "package:macos:universal": "scripts/package-macos-portable.sh --universal",
@@ -87,7 +89,6 @@
   "dependencies": {
     "@clack/prompts": "^1.0.1",
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "@sentry/node": "^10.43.0",
     "bplist-parser": "^0.3.2",
     "chokidar": "^5.0.0",
     "glob": "^13.0.6",

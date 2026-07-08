@@ -10,13 +10,6 @@ import {
   DEFAULT_DAEMON_STARTUP_TIMEOUT_MS,
 } from '../cli/daemon-control.ts';
 import { log } from '../utils/logger.ts';
-import {
-  recordInternalErrorMetric,
-  recordToolInvocationMetric,
-  type SentryToolInvocationOutcome,
-  type SentryToolRuntime,
-  type SentryToolTransport,
-} from '../utils/sentry.ts';
 import type { RenderSession, ToolHandlerContext } from '../rendering/types.ts';
 import { createRenderSession } from '../rendering/render.ts';
 
@@ -249,13 +242,6 @@ function getErrorKind(error: unknown): string {
   return error instanceof Error ? error.name || 'Error' : typeof error;
 }
 
-function mapRuntimeToSentryToolRuntime(runtime: InvokeOptions['runtime']): SentryToolRuntime {
-  if (runtime === 'daemon' || runtime === 'mcp') {
-    return runtime;
-  }
-  return 'cli';
-}
-
 export class DefaultToolInvoker implements ToolInvoker {
   constructor(private catalog: ToolCatalog) {}
 
@@ -306,8 +292,6 @@ export class DefaultToolInvoker implements ToolInvoker {
     context: {
       label: string;
       errorTitle: string;
-      captureInfraErrorMetric: (error: unknown) => void;
-      captureInvocationMetric: (outcome: SentryToolInvocationOutcome) => void;
       consumeResult: (result: TResult) => void;
       postProcessParams: {
         tool: ToolDefinition;
@@ -319,9 +303,6 @@ export class DefaultToolInvoker implements ToolInvoker {
     const session = opts.renderSession!;
     const socketPath = opts.socketPath;
     if (!socketPath) {
-      const error = new Error('SocketPathMissing');
-      context.captureInfraErrorMetric(error);
-      context.captureInvocationMetric('infra_error');
       session.emit(
         createStatusFragment(
           'error',
@@ -346,10 +327,7 @@ export class DefaultToolInvoker implements ToolInvoker {
         log(
           'error',
           `[infra/tool-invoker] ${context.label} daemon auto-start failed (${getErrorKind(error)})`,
-          { sentry: true },
         );
-        context.captureInfraErrorMetric(error);
-        context.captureInvocationMetric('infra_error');
         session.emit(
           createStatusFragment(
             'error',
@@ -362,7 +340,6 @@ export class DefaultToolInvoker implements ToolInvoker {
 
     try {
       const daemonResult = await invoke(client);
-      context.captureInvocationMetric('completed');
       context.consumeResult(daemonResult);
     } catch (error) {
       if (error instanceof DaemonVersionMismatchError) {
@@ -377,17 +354,13 @@ export class DefaultToolInvoker implements ToolInvoker {
           });
           const retryClient = new DaemonClient({ socketPath });
           const daemonResult = await invoke(retryClient);
-          context.captureInvocationMetric('completed');
           context.consumeResult(daemonResult);
           return;
         } catch (retryError) {
           log(
             'error',
             `[infra/tool-invoker] ${context.label} daemon restart failed (${getErrorKind(retryError)})`,
-            { sentry: true },
           );
-          context.captureInfraErrorMetric(retryError);
-          context.captureInvocationMetric('infra_error');
           session.emit(
             createStatusFragment(
               'error',
@@ -401,10 +374,7 @@ export class DefaultToolInvoker implements ToolInvoker {
       log(
         'error',
         `[infra/tool-invoker] ${context.label} transport failed (${getErrorKind(error)})`,
-        { sentry: true },
       );
-      context.captureInfraErrorMetric(error);
-      context.captureInvocationMetric('infra_error');
       session.emit(
         createStatusFragment(
           'error',
@@ -419,43 +389,18 @@ export class DefaultToolInvoker implements ToolInvoker {
     args: Record<string, unknown>,
     opts: InvokeOptions,
   ): Promise<void> {
-    const startedAt = Date.now();
-    const runtime = mapRuntimeToSentryToolRuntime(opts.runtime);
-    let transport: SentryToolTransport = 'direct';
-
-    const captureInvocationMetric = (outcome: SentryToolInvocationOutcome): void => {
-      recordToolInvocationMetric({
-        toolName: tool.mcpName,
-        runtime,
-        transport,
-        outcome,
-        durationMs: Date.now() - startedAt,
-      });
-    };
-
-    const captureInfraErrorMetric = (error: unknown): void => {
-      recordInternalErrorMetric({
-        component: 'tool-invoker',
-        runtime,
-        errorKind: getErrorKind(error),
-      });
-    };
-
     const postProcessParams = { tool, catalog: this.catalog, runtime: opts.runtime };
     const xcodeIdeRemoteToolName = tool.xcodeIdeRemoteToolName;
     const isDynamicXcodeIdeTool =
       tool.workflow === 'xcode-ide' && typeof xcodeIdeRemoteToolName === 'string';
 
     if (opts.runtime === 'cli' && isDynamicXcodeIdeTool) {
-      transport = 'xcode-ide-daemon';
       return this.invokeViaDaemon(
         opts,
         (client) => client.invokeXcodeIdeTool(xcodeIdeRemoteToolName, args),
         {
           label: 'xcode-ide',
           errorTitle: 'Xcode IDE invocation failed',
-          captureInfraErrorMetric,
-          captureInvocationMetric,
           consumeResult: (daemonResult: DaemonToolResult) => {
             for (const fragment of daemonResult.fragments ?? []) {
               opts.renderSession!.emit(fragment);
@@ -486,7 +431,6 @@ export class DefaultToolInvoker implements ToolInvoker {
     if (opts.runtime === 'cli' && tool.stateful) {
       const session = opts.renderSession!;
 
-      transport = 'daemon';
       return this.invokeViaDaemon(
         opts,
         (client) =>
@@ -499,8 +443,6 @@ export class DefaultToolInvoker implements ToolInvoker {
         {
           label: `daemon/${tool.mcpName}`,
           errorTitle: 'Daemon invocation failed',
-          captureInfraErrorMetric,
-          captureInvocationMetric,
           consumeResult: (daemonResult: ToolInvokeResult) => {
             if (daemonResult.structuredOutput) {
               session.setStructuredOutput?.(daemonResult.structuredOutput);
@@ -552,8 +494,6 @@ export class DefaultToolInvoker implements ToolInvoker {
         opts.onStructuredOutput?.(ctx.structuredOutput);
       }
 
-      captureInvocationMetric('completed');
-
       if (opts.runtime !== 'daemon') {
         postProcessSession({
           ...postProcessParams,
@@ -565,10 +505,7 @@ export class DefaultToolInvoker implements ToolInvoker {
       log(
         'error',
         `[infra/tool-invoker] direct tool handler failed for ${tool.mcpName} (${getErrorKind(error)})`,
-        { sentry: true },
       );
-      captureInfraErrorMetric(error);
-      captureInvocationMetric('infra_error');
       if (opts.runtime === 'daemon') {
         throw error instanceof Error ? error : new Error(String(error));
       }

@@ -5,6 +5,27 @@
 ### Added
 
 - Added `xcodebuildmcp upgrade` command to check for updates and upgrade in place. Supports `--check` (report-only) and `--yes`/`-y` (skip confirmation). Detects install method (Homebrew, npm-global, npx) and queries the appropriate channel source (`brew info`, `npm view`, or GitHub Releases) for the latest version. Non-interactive environments exit 1 when an auto-upgrade is possible but `--yes` was not supplied.
+- Added `build-tools` workflow group with 4 new tools for macOS build pipeline automation
+- Added `xcodegen_generate` tool for generating Xcode projects from xcodegen specs
+- Added `create_dmg` tool for creating DMG disk images with path traversal and symlink escape protection
+- Added `codesign_app` tool for code signing and optional notarization (sign, verify, notarize, staple)
+- Added `pfctl_anchor` tool for read-only PF firewall anchor inspection
+- Added `xcodebuildmcp.output.command-result` structured output schema shared by all build-tools
+- Added `CommandResultDomainResult` type to domain results union
+- Added native HTTP transport for the MCP server (`mcp --transport http`, with `--port`, `--host`, and `--session-timeout-ms`) using the MCP SDK's `StreamableHTTPServerTransport`; stdio remains the default transport
+- Added progress notifications (`notifications/progress` heartbeat) for long-running build and test tools so idle-timeout-prone transports stay alive for the duration of the call
+- Added AbortSignal-based cancellation for `test_macos`, `test_sim`, `test_device`, and the `build_run_*` build phase: cancelling the MCP request now terminates the whole `xcodebuild` process group (SIGTERM, then SIGKILL after a 10 s grace period) instead of orphaning it
+
+### Changed
+
+- `scripts/serve-mcp.sh` launches the MCP server directly via the native Streamable HTTP transport instead of through a supergateway bridge
+- Declared a minimum supported Node.js version (`engines.node >= 22`); previously the package declared no `engines` field and the README stated Node 18+
+- MCP tools now reject unknown argument keys with an error that explains the session-defaults flow, instead of silently stripping them (a call naming a different `projectPath`/`scheme` used to run against the session-default project without any signal); advertised input schemas now declare `additionalProperties: false`
+
+### Removed
+
+- Removed all Sentry error telemetry and internal usage metrics. XcodeBuildMCP no longer collects or transmits any telemetry: the `@sentry/node` dependency, the Sentry instrumentation and MCP server wrapper, the `{ sentry: true }` log-forwarding path, and the `sentryDisabled` config option / `XCODEBUILDMCP_SENTRY_DISABLED` environment variable have all been removed. See [docs/PRIVACY.md](docs/PRIVACY.md).
+- Removed the supergateway-based HTTP bridge; `scripts/patch-supergateway.sh` moved to `scripts/legacy/` for one release as a rollback path
 
 ## [2.3.2]
 

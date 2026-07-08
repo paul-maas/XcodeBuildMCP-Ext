@@ -217,7 +217,6 @@ export async function executeXcodeBuildCommand(
       log(
         isMcpError ? 'error' : 'warning',
         `${platformOptions.logPrefix} ${buildAction} failed: ${result.error}`,
-        { sentry: isMcpError },
       );
 
       const failureMsg = `${platformOptions.logPrefix} ${buildAction} failed for scheme ${params.scheme}.`;
@@ -251,14 +250,7 @@ export async function executeXcodeBuildCommand(
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
 
-    const isSpawnError =
-      error instanceof Error &&
-      'code' in error &&
-      ['ENOENT', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '');
-
-    log('error', `Error during ${platformOptions.logPrefix} ${buildAction}: ${errorMessage}`, {
-      sentry: !isSpawnError,
-    });
+    log('error', `Error during ${platformOptions.logPrefix} ${buildAction}: ${errorMessage}`);
 
     const errorMsg = `Error during ${platformOptions.logPrefix} ${buildAction}: ${errorMessage}`;
     return { content: [{ type: 'text', text: errorMsg }], isError: true };

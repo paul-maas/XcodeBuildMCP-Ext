@@ -46,7 +46,6 @@ describe('config-store', () => {
   it('parses env values when provided', async () => {
     const env = {
       XCODEBUILDMCP_DEBUG: 'true',
-      XCODEBUILDMCP_SENTRY_DISABLED: 'true',
       INCREMENTAL_BUILDS_ENABLED: '1',
       XCODEBUILDMCP_DAP_REQUEST_TIMEOUT_MS: '12345',
       XCODEBUILDMCP_DAP_LOG_EVENTS: 'true',
@@ -60,7 +59,6 @@ describe('config-store', () => {
 
     const config = getConfig();
     expect(config.debug).toBe(true);
-    expect(config.sentryDisabled).toBe(true);
     expect(config.incrementalBuildsEnabled).toBe(true);
     expect(config.dapRequestTimeoutMs).toBe(12345);
     expect(config.dapLogEvents).toBe(true);
@@ -87,15 +85,6 @@ describe('config-store', () => {
     const config = getConfig();
     expect(config.debug).toBe(true);
     expect(config.dapRequestTimeoutMs).toBe(12345);
-  });
-
-  it('reads sentryDisabled from config file', async () => {
-    const yaml = ['schemaVersion: 1', 'sentryDisabled: true', ''].join('\n');
-
-    await initConfigStore({ cwd, fs: createFs(yaml) });
-
-    const config = getConfig();
-    expect(config.sentryDisabled).toBe(true);
   });
 
   it('resolves enabledWorkflows from overrides, config, then defaults', async () => {

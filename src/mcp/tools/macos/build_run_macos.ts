@@ -82,7 +82,7 @@ export function createBuildRunMacOSExecutor(
       params.preferXcodebuild ?? false,
       'build',
       executor,
-      undefined,
+      ctx.signal ? { signal: ctx.signal, processGroup: true } : undefined,
       started.pipeline,
     );
 

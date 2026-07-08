@@ -7,7 +7,10 @@ on:
 permissions:
   contents: read
   issues: write
-  pull-requests: read
+  # PR comments via the issues API are gated by the pull-requests scope;
+  # with read-only the createComment call fails with "Resource not accessible
+  # by integration".
+  pull-requests: write
 
 jobs:
   comment:

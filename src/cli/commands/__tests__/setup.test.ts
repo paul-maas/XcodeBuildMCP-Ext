@@ -183,7 +183,6 @@ describe('setup command', () => {
 
     const parsed = parseYaml(getStoredConfig()) as {
       debug?: boolean;
-      sentryDisabled?: boolean;
       enabledWorkflows?: string[];
       sessionDefaults?: Record<string, unknown>;
     };
@@ -191,7 +190,6 @@ describe('setup command', () => {
     expect(parsed.enabledWorkflows?.length).toBeGreaterThan(0);
     expect(parsed.enabledWorkflows).not.toContain('doctor');
     expect(parsed.debug).toBe(false);
-    expect(parsed.sentryDisabled).toBe(false);
     expect(parsed.sessionDefaults?.workspacePath).toBe('App.xcworkspace');
     expect(parsed.sessionDefaults?.scheme).toBe('App');
     expect(parsed.sessionDefaults?.deviceId).toBe('DEVICE-1');
