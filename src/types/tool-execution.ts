@@ -12,6 +12,8 @@ export interface ToolAttachment {
  */
 export interface StreamingExecutionContext {
   liveProgressEnabled: boolean;
+  /** Abort signal of the originating request; executors opt in to cancel their child processes. */
+  signal?: AbortSignal;
   attach?(image: ToolAttachment): void;
   emitFragment(fragment: AnyFragment): void;
 }

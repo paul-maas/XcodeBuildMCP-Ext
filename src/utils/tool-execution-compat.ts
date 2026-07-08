@@ -17,6 +17,7 @@ export function createStreamingExecutionContext(
 ): DefaultStreamingExecutionContext {
   return new DefaultStreamingExecutionContext({
     liveProgressEnabled: ctx.liveProgressEnabled,
+    signal: ctx.signal,
     onFragment: ctx.streamingFragmentsEnabled ? (fragment) => ctx.emit(fragment) : undefined,
   });
 }

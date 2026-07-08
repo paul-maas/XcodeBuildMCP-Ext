@@ -94,9 +94,15 @@ export function createTestExecutor(
       `Starting test run for scheme ${params.scheme} on platform ${params.platform} (executor)`,
     );
 
-    const execOpts: CommandExecOptions | undefined = params.testRunnerEnv
-      ? { env: normalizeTestRunnerEnv(params.testRunnerEnv) }
-      : undefined;
+    // Cancellation (ctx.signal) kills the xcodebuild process group; opt-in
+    // here only — long-lived sessions must never receive the request signal.
+    const execOpts: CommandExecOptions | undefined =
+      params.testRunnerEnv || ctx.signal
+        ? {
+            ...(params.testRunnerEnv ? { env: normalizeTestRunnerEnv(params.testRunnerEnv) } : {}),
+            ...(ctx.signal ? { signal: ctx.signal, processGroup: true } : {}),
+          }
+        : undefined;
     const shouldUseTwoPhaseSimulatorExecution =
       String(params.platform).includes('Simulator') && Boolean(options.preflight);
     const toolName = options.toolName ?? 'test_sim';

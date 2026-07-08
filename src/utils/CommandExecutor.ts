@@ -8,6 +8,19 @@ export interface CommandExecOptions {
   cwd?: string;
   onStdout?: (chunk: string) => void;
   onStderr?: (chunk: string) => void;
+  /**
+   * Abort the spawned process when the signal fires. Opt-in per call — never
+   * set for long-lived sessions (log/video capture, debugger, daemon), which
+   * must outlive the request that started them.
+   */
+  signal?: AbortSignal;
+  /**
+   * Spawn the child in its own process group so an abort can kill every
+   * descendant with a single `process.kill(-pid, ...)` (e.g. xcodebuild and
+   * its test runners). Distinct from the positional `detached` parameter,
+   * which only changes when the promise resolves.
+   */
+  processGroup?: boolean;
 }
 
 /**

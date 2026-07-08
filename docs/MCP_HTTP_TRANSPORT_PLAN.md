@@ -15,9 +15,9 @@ The full monolithic `test_macos` run now completes and delivers its structured r
 - ✅ **Interim supergateway progress-routing patch** (commit `adbf92e9`): routes progress to the request's stream so the response connection survives. Details under "Interim supergateway patch". **Superseded by Stage 3.**
 - ✅ **Stage 3 — Layer B** (2026-07-06): native `StreamableHTTPServerTransport` via `mcp --transport http` (`src/server/start-mcp-http-server.ts`); supergateway removed from `scripts/serve-mcp.sh` and `scripts/patch-supergateway.sh` moved to `scripts/legacy/`. Implementation notes under "Stage 3" below.
 
-Remaining (this document):
+- ✅ **Stage 2 — Layer A2** (2026-07-08): AbortSignal → `xcodebuild` process-group kill. `CommandExecOptions` gained opt-in `signal`/`processGroup`; `ctx.signal` is threaded through `test_macos`/`test_sim`/`test_device` (via `createTestExecutor`) and the `build_run_*` build phase. Implementation notes under "Stage 2" below.
 
-- ⏳ **Stage 2 — Layer A2** (AbortSignal → `xcodebuild` process-group kill): reordered to **after** Stage 3. It is no longer urgent (the heartbeat means runs complete instead of dying mid-run, so idle-drop orphans no longer occur), and it is cleaner to build on Layer B's well-defined cancellation signal (`ctx.signal` is already populated from `extra.signal` in both transports) than on supergateway's `child.kill()` semantics.
+Remaining (this document): nothing — Stages 1–4 are shipped. Stage 5 (Tasks API migration) stays direction-only.
 
 ## Root cause (three independent layers)
 
@@ -75,7 +75,7 @@ Remediations by layer. In practice a working end-to-end path today needs **Layer
 | A1 | `extra.sendNotification` → periodic `notifications/progress` heartbeat | Client idle-watchdog (30 s) and transport idle (~165 s) stay warm; run survives to completion | ✅ done |
 | — | Route progress with `relatedRequestId` so it rides the request's response stream | Completed result is actually deliverable (not lost on a dead idle connection) | ✅ interim patch; free under Layer B |
 | B | Replace supergateway with native `StreamableHTTPServerTransport` | Removes "any HTTP error kills the child" **and** the request↔notification association loss; deletes both supergateway patches | ✅ done |
-| A2 | Propagate `extra.signal` → `xcodebuild` process-group kill | Cancellation cleanly stops the run; no orphaned `xcodebuild` | ⏳ after Stage 3 |
+| A2 | Propagate `extra.signal` → `xcodebuild` process-group kill | Cancellation cleanly stops the run; no orphaned `xcodebuild` | ✅ done |
 | C (future) | Migrate long-running tools to `registerToolTask` (experimental Tasks API) | HTTP requests become short status pings; long execution lives server-side | later |
 
 ## Phased plan
@@ -106,7 +106,12 @@ Shipped as a simple heartbeat, deliberately **simpler** than the fragment-mappin
 
 Both were **interim workarounds**. Stage 3 (native transport) removed supergateway — a native `StreamableHTTPServerTransport` associates request-scoped notifications with their stream automatically, so neither patch is needed. The script lives in `scripts/legacy/patch-supergateway.sh` for one release as a rollback path.
 
-### Stage 2 — Layer A2: AbortSignal propagation
+### Stage 2 — Layer A2: AbortSignal propagation — ✅ DONE (2026-07-08)
+
+Shipped as specced in 2.1–2.5 below, with one implementation finding:
+
+- **Abort-listener ordering (2.2).** Node's built-in spawn `signal` handling emits its `AbortError` *synchronously* during the abort dispatch. That settles the executor promise, whose cleanup removes our group-kill abort listener — and EventTarget removals take effect mid-dispatch, so a listener registered *after* `spawn()` never fired. The group-kill listener is therefore registered **before** `spawn()` (it runs first, then Node's). Caught by the real-process tests in 2.5 — the process-group test failed against the naive ordering.
+- **Signal plumbing (2.3/2.4).** `StreamingExecutionContext` gained an optional `signal`, populated from `ToolHandlerContext.signal` by `createStreamingExecutionContext`. `createTestExecutor` (shared by `test_macos`/`test_sim`/`test_device`) and the three `build_run_*` executors pass `{ signal, processGroup: true }` into `executeXcodeBuildCommand`; nothing else opts in, so long-lived sessions (log/video capture, debugger, daemon) never see the request signal.
 
 2.1 Extend `CommandExecOptions` in `src/utils/CommandExecutor.ts` with two new fields:
 - `signal?: AbortSignal`

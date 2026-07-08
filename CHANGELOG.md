@@ -14,6 +14,7 @@
 - Added `CommandResultDomainResult` type to domain results union
 - Added native HTTP transport for the MCP server (`mcp --transport http`, with `--port`, `--host`, and `--session-timeout-ms`) using the MCP SDK's `StreamableHTTPServerTransport`; stdio remains the default transport
 - Added progress notifications (`notifications/progress` heartbeat) for long-running build and test tools so idle-timeout-prone transports stay alive for the duration of the call
+- Added AbortSignal-based cancellation for `test_macos`, `test_sim`, `test_device`, and the `build_run_*` build phase: cancelling the MCP request now terminates the whole `xcodebuild` process group (SIGTERM, then SIGKILL after a 10 s grace period) instead of orphaning it
 
 ### Changed
 
