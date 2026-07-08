@@ -13,6 +13,9 @@ on:
 
 jobs:
   publish:
+    # Publishes to the getsentry website via a deploy key that only exists in
+    # the upstream repository; on forks the missing secret failed every run.
+    if: github.repository == 'getsentry/XcodeBuildMCP'
     runs-on: ubuntu-latest
     env:
       WEBSITE_REPO: getsentry/xcodebuildmcp.com
