@@ -25,7 +25,7 @@
 ### Removed
 
 - Removed all Sentry error telemetry and internal usage metrics. XcodeBuildMCP no longer collects or transmits any telemetry: the `@sentry/node` dependency, the Sentry instrumentation and MCP server wrapper, the `{ sentry: true }` log-forwarding path, and the `sentryDisabled` config option / `XCODEBUILDMCP_SENTRY_DISABLED` environment variable have all been removed. See [docs/PRIVACY.md](docs/PRIVACY.md).
-- Removed the supergateway-based HTTP bridge; `scripts/patch-supergateway.sh` moved to `scripts/legacy/` for one release as a rollback path
+- Removed the supergateway-based HTTP bridge and its patch script (`scripts/patch-supergateway.sh`); the native Streamable HTTP transport replaces it entirely
 
 ## [2.3.2]
 

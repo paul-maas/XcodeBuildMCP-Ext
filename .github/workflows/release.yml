@@ -134,8 +134,11 @@ jobs:
           echo "🧪 Testing package creation (dry run)"
           npm publish --dry-run --access public --tag "$NPM_TAG"
 
+      # npm publishing is upstream-only: the xcodebuildmcp package belongs to
+      # the upstream maintainer and forks have no npm token; without the gate
+      # this step fails and takes the whole release down.
       - name: Publish to NPM (production releases only)
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.repository == 'getsentry/XcodeBuildMCP'
         env:
           VERSION: ${{ steps.get_version.outputs.VERSION }}
           NPM_TAG: ${{ steps.resolve_npm_tag.outputs.NPM_TAG }}

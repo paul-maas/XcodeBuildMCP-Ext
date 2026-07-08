@@ -106,7 +106,7 @@ Shipped as a simple heartbeat, deliberately **simpler** than the fragment-mappin
 1. **Async send** (pre-existing): wrap `transport.send(jsonMsg)` in `.catch()` so rejected sends don't crash the process.
 2. **Progress routing** (new): forward `notifications/progress` with `relatedRequestId = params.progressToken`, so the heartbeat lands on the request's POST response stream instead of the standalone GET stream. Without it the response connection is idle-dropped and the result is undeliverable (findings 4–5).
 
-Both were **interim workarounds**. Stage 3 (native transport) removed supergateway — a native `StreamableHTTPServerTransport` associates request-scoped notifications with their stream automatically, so neither patch is needed. The script lives in `scripts/legacy/patch-supergateway.sh` for one release as a rollback path.
+Both were **interim workarounds**. Stage 3 (native transport) removed supergateway — a native `StreamableHTTPServerTransport` associates request-scoped notifications with their stream automatically, so neither patch is needed. The script sat in `scripts/legacy/` as a rollback path and was deleted in v2.4.0 (recoverable from git history if ever needed).
 
 ### Stage 2 — Layer A2: AbortSignal propagation — ✅ DONE (2026-07-08)
 
@@ -234,5 +234,5 @@ Audit ran against this plan during design. Twelve risks were identified; eleven 
 - `src/server/server.ts:53-65,92-96` — MCP server capabilities and stdio transport binding.
 - `src/server/start-mcp-http-server.ts` — native Streamable HTTP transport host (Stage 3).
 - `src/utils/session-store.ts` — singleton session defaults store (single-session posture reason; TODO comment at the singleton).
-- `scripts/serve-mcp.sh` — direct `mcp --transport http` launcher; `scripts/legacy/patch-supergateway.sh` — retired supergateway patches (async-send + progress routing via `relatedRequestId`), kept one release for rollback.
+- `scripts/serve-mcp.sh` — direct `mcp --transport http` launcher. The retired supergateway patches (async-send + progress routing via `relatedRequestId`) lived in `scripts/legacy/patch-supergateway.sh` until v2.4.0; recover from git history if ever needed.
 - `@modelcontextprotocol/sdk` v1.27.1 — provides `StreamableHTTPServerTransport`, `RequestHandlerExtra` (`signal`, `sendNotification`, `_meta`), and experimental Tasks API.
