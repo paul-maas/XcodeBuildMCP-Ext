@@ -225,6 +225,7 @@ export function createTestSimExecutor(
       toolName: 'test_sim',
       target: 'simulator',
       request: resolved.invocationRequest,
+      fileSystemExecutor,
     });
 
     return executeTest(

@@ -118,6 +118,7 @@ export function createTestMacOSExecutor(
       toolName: 'test_macos',
       target: 'macos',
       request: resolved.invocationRequest,
+      fileSystemExecutor,
     });
 
     return executeTest(

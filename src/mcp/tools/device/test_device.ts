@@ -130,6 +130,7 @@ export function createTestDeviceExecutor(
       toolName: 'test_device',
       target: 'device',
       request: resolved.invocationRequest,
+      fileSystemExecutor,
     });
 
     return executeTest(

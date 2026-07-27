@@ -400,4 +400,63 @@ describe('test_macos plugin (unified)', () => {
       expect(result.isError()).toBe(true);
     });
   });
+
+  describe('cleanDerivedData (hygiene)', () => {
+    it('removes the effective DerivedData path before the run when cleanDerivedData is true', async () => {
+      const rmCalls: string[] = [];
+      const fs = createMockFileSystemExecutor({
+        mkdtemp: async () => '/tmp/test-123',
+        tmpdir: () => '/tmp',
+        stat: async () => ({ isDirectory: () => false, mtimeMs: 0 }),
+        rm: async (path: string) => {
+          rmCalls.push(path);
+        },
+      });
+      const mockExecutor = createMockExecutor({
+        success: true,
+        output: 'Test Suite All Tests passed',
+      });
+
+      await runTestMacosLogic(
+        {
+          workspacePath: '/path/to/MyProject.xcworkspace',
+          scheme: 'MyScheme',
+          derivedDataPath: '/tmp/custom-dd',
+          cleanDerivedData: true,
+        },
+        mockExecutor,
+        fs,
+      );
+
+      expect(rmCalls).toContain('/tmp/custom-dd');
+    });
+
+    it('does not remove DerivedData when cleanDerivedData is omitted', async () => {
+      const rmCalls: string[] = [];
+      const fs = createMockFileSystemExecutor({
+        mkdtemp: async () => '/tmp/test-123',
+        tmpdir: () => '/tmp',
+        stat: async () => ({ isDirectory: () => false, mtimeMs: 0 }),
+        rm: async (path: string) => {
+          rmCalls.push(path);
+        },
+      });
+      const mockExecutor = createMockExecutor({
+        success: true,
+        output: 'Test Suite All Tests passed',
+      });
+
+      await runTestMacosLogic(
+        {
+          workspacePath: '/path/to/MyProject.xcworkspace',
+          scheme: 'MyScheme',
+          derivedDataPath: '/tmp/custom-dd',
+        },
+        mockExecutor,
+        fs,
+      );
+
+      expect(rmCalls).not.toContain('/tmp/custom-dd');
+    });
+  });
 });
