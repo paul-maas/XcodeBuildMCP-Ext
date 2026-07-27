@@ -8,11 +8,15 @@ import { log } from './logger.ts';
 import { toErrorMessage } from './errors.ts';
 import type { XcodePlatform } from './xcode.ts';
 import { executeXcodeBuildCommand } from './build/index.ts';
-import { extractTestFailuresFromXcresult } from './xcresult-test-failures.ts';
+import { extractTestResultsFromXcresult } from './xcresult-test-failures.ts';
+import type { XcresultTestCounts } from './xcresult-test-failures.ts';
 
 import { normalizeTestRunnerEnv } from './environment.ts';
 import type { CommandExecutor, CommandExecOptions } from './command.ts';
 import { getDefaultCommandExecutor } from './command.ts';
+import { resolveEffectiveDerivedDataPath } from './derived-data-path.ts';
+import type { FileSystemExecutor } from './execution/index.ts';
+import { getDefaultFileSystemExecutor } from './execution/index.ts';
 import { type TestPreflightResult } from './test-preflight.ts';
 
 import { createSimulatorTwoPhaseExecutionPlan } from './simulator-test-execution.ts';
@@ -26,15 +30,33 @@ import {
   createTestDomainResult,
 } from './xcodebuild-domain-results.ts';
 
-function emitXcresultFailures(
+function emitXcresultResults(
   pipeline: ReturnType<typeof createDomainStreamingPipeline>['pipeline'],
-): void {
+): XcresultTestCounts | null {
   const xcresultPath = pipeline.xcresultPath;
-  if (xcresultPath) {
-    const failures = extractTestFailuresFromXcresult(xcresultPath);
-    for (const event of failures) {
-      pipeline.emitFragment(event);
-    }
+  if (!xcresultPath) {
+    return null;
+  }
+  const { failures, counts } = extractTestResultsFromXcresult(xcresultPath);
+  for (const event of failures) {
+    pipeline.emitFragment(event);
+  }
+  return counts;
+}
+
+async function cleanDerivedDataIfRequested(
+  params: SharedTestExecutorParams,
+  fileSystemExecutor: FileSystemExecutor,
+): Promise<void> {
+  if (!params.cleanDerivedData) {
+    return;
+  }
+  const derivedDataPath = resolveEffectiveDerivedDataPath(params.derivedDataPath);
+  log('info', `cleanDerivedData: removing DerivedData before test run: ${derivedDataPath}`);
+  try {
+    await fileSystemExecutor.rm(derivedDataPath, { recursive: true, force: true });
+  } catch (error) {
+    log('warn', `cleanDerivedData: failed to remove ${derivedDataPath}: ${toErrorMessage(error)}`);
   }
 }
 
@@ -70,6 +92,7 @@ export interface SharedTestExecutorParams {
   useLatestOS?: boolean;
   packageCachePath?: string;
   derivedDataPath?: string;
+  cleanDerivedData?: boolean;
   extraArgs?: string[];
   preferXcodebuild?: boolean;
   platform: XcodePlatform;
@@ -82,6 +105,7 @@ export interface SharedTestExecutorOptions {
   toolName?: string;
   target?: BuildTarget;
   request: BuildInvocationRequest;
+  fileSystemExecutor?: FileSystemExecutor;
 }
 
 export function createTestExecutor(
@@ -122,6 +146,9 @@ export function createTestExecutor(
     if (discoveryEvent) {
       started.pipeline.emitFragment(discoveryEvent);
     }
+
+    const fileSystemExecutor = options.fileSystemExecutor ?? getDefaultFileSystemExecutor();
+    await cleanDerivedDataIfRequested(params, fileSystemExecutor);
 
     try {
       if (shouldUseTwoPhaseSimulatorExecution) {
@@ -169,7 +196,7 @@ export function createTestExecutor(
           started.pipeline,
         );
 
-        emitXcresultFailures(started.pipeline);
+        const xcresultCounts = emitXcresultResults(started.pipeline);
 
         return createTestDomainResult({
           started,
@@ -185,6 +212,7 @@ export function createTestExecutor(
           ),
           preflight: options.preflight,
           request: options.request,
+          xcresultCounts,
         });
       }
 
@@ -198,7 +226,7 @@ export function createTestExecutor(
         started.pipeline,
       );
 
-      emitXcresultFailures(started.pipeline);
+      const xcresultCounts = emitXcresultResults(started.pipeline);
 
       return createTestDomainResult({
         started,
@@ -214,6 +242,7 @@ export function createTestExecutor(
         ),
         preflight: options.preflight,
         request: options.request,
+        xcresultCounts,
       });
     } catch (error) {
       const errorMessage = toErrorMessage(error);

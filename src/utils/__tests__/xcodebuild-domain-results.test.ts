@@ -133,4 +133,50 @@ describe('xcodebuild-domain-results', () => {
     expect(result.tests?.discovered?.total).toBe(testCount);
     expect(result.tests?.discovered?.items).toHaveLength(6);
   });
+
+  it('uses authoritative .xcresult counts over the parsed stdout count', () => {
+    const runState = createXcodebuildRunState({ operation: 'TEST' });
+    // Parsed stdout under-counted (the 14-of-77 bug: Math.max over per-suite summary lines).
+    runState.push({
+      kind: 'test-result',
+      fragment: 'test-progress',
+      operation: 'TEST',
+      completed: 14,
+      failed: 0,
+      skipped: 0,
+    });
+
+    const result = createTestDomainResult({
+      started: createStartedPipelineWithState(runState.finalize(true, 1000)),
+      succeeded: true,
+      target: 'macos',
+      artifacts: { buildLogPath: '/tmp/build.log' },
+      request: { scheme: 'App' },
+      xcresultCounts: { passed: 77, failed: 0, skipped: 0, total: 77 },
+    });
+
+    expect(result.summary.counts).toEqual({ passed: 77, failed: 0, skipped: 0 });
+  });
+
+  it('falls back to parsed counts flagged approximate when .xcresult is unavailable', () => {
+    const runState = createXcodebuildRunState({ operation: 'TEST' });
+    runState.push({
+      kind: 'test-result',
+      fragment: 'test-progress',
+      operation: 'TEST',
+      completed: 14,
+      failed: 0,
+      skipped: 0,
+    });
+
+    const result = createTestDomainResult({
+      started: createStartedPipelineWithState(runState.finalize(true, 1000)),
+      succeeded: true,
+      target: 'macos',
+      artifacts: { buildLogPath: '/tmp/build.log' },
+      request: { scheme: 'App' },
+    });
+
+    expect(result.summary.counts).toEqual({ passed: 14, failed: 0, skipped: 0, approximate: true });
+  });
 });

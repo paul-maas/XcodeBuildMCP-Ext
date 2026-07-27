@@ -50,7 +50,9 @@ describe('test_macos plugin (unified)', () => {
       expect(zodSchema.safeParse({ testRunnerEnv: { FOO: 123 } }).success).toBe(false);
 
       const schemaKeys = Object.keys(schema).sort();
-      expect(schemaKeys).toEqual(['extraArgs', 'progress', 'testRunnerEnv'].sort());
+      expect(schemaKeys).toEqual(
+        ['cleanDerivedData', 'extraArgs', 'progress', 'testRunnerEnv'].sort(),
+      );
     });
   });
 

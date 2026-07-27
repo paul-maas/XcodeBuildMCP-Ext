@@ -19,6 +19,7 @@
 
 import { createServer as createHttpServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Socket } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
@@ -32,6 +33,13 @@ const SESSION_ID_HEADER = 'mcp-session-id';
 // structured tool results); bounds memory without ever getting in the way of
 // legitimate traffic.
 const MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024;
+// OS-level TCP keepalive probe delay for accepted connections. Keeps the
+// container<->host NAT mapping warm between tool calls (the progress heartbeat
+// only covers in-flight calls), so an idle SSE stream is not reaped mid-session.
+const HTTP_KEEPALIVE_INITIAL_DELAY_MS = 20_000;
+// Retry-After hint (seconds) when a new initialize is refused because a tool
+// call is in flight on the current session (non-destructive takeover, Stage 6).
+const HTTP_BUSY_RETRY_AFTER_SECONDS = 5;
 
 export interface McpHttpServerOptions {
   port: number;
@@ -50,6 +58,8 @@ interface McpHttpSession {
   transport: StreamableHTTPServerTransport;
   /** Open HTTP requests currently routed to this session (POST response streams, standalone GET stream). */
   inflightRequests: number;
+  /** In-flight POST tool calls only (excludes the idle GET stream); gates non-destructive takeover. */
+  inflightPosts: number;
   idleTimer: NodeJS.Timeout | null;
 }
 
@@ -185,7 +195,12 @@ export async function startMcpHttpServer(
         log('info', `[mcp-http] Session initialized: ${sessionId}`);
       },
     });
-    const session: McpHttpSession = { transport, inflightRequests: 0, idleTimer: null };
+    const session: McpHttpSession = {
+      transport,
+      inflightRequests: 0,
+      inflightPosts: 0,
+      idleTimer: null,
+    };
 
     // Set before server.connect() so the SDK chains (not replaces) these handlers.
     transport.onclose = (): void => {
@@ -227,6 +242,10 @@ export async function startMcpHttpServer(
       const existingSession = sessionId ? sessions.get(sessionId) : undefined;
       if (sessionId && existingSession) {
         trackRequest(existingSession, res);
+        existingSession.inflightPosts += 1;
+        res.once('close', () => {
+          existingSession.inflightPosts -= 1;
+        });
         await existingSession.transport.handleRequest(req, res, parsedBody);
         return;
       }
@@ -262,6 +281,21 @@ export async function startMcpHttpServer(
             'Unsupported Media Type: Content-Type must be application/json',
           );
           return;
+        }
+
+        // Non-destructive takeover (belt): refuse a new initialize while a tool
+        // call is in flight on the current session, so a second actor cannot kill
+        // a running build. inflightRequests counts the idle GET stream too, so it
+        // cannot gate this — inflightPosts is POST-only. The newcomer retries;
+        // single-owner-by-phase remains the primary guarantee. See
+        // docs/MCP_HTTP_TRANSPORT_PLAN.md (Stage 6).
+        for (const active of sessions.values()) {
+          if (active.inflightPosts > 0) {
+            respondJsonRpcError(res, 503, -32000, 'Server busy: a tool call is in progress', {
+              'Retry-After': String(HTTP_BUSY_RETRY_AFTER_SECONDS),
+            });
+            return;
+          }
         }
 
         const session = await createSessionTransport();
@@ -323,6 +357,13 @@ export async function startMcpHttpServer(
       log('error', `[mcp-http] Request handling failed: ${toErrorMessage(error)}`);
       respondJsonRpcError(res, 500, -32603, 'Internal server error');
     });
+  });
+
+  httpServer.on('connection', (socket: Socket) => {
+    // Keep the container<->host NAT mapping warm between tool calls: the progress
+    // heartbeat only runs during a call, so an otherwise-idle SSE stream would be
+    // reaped (~165 s observed) and force a reconnect + tool-schema reload.
+    socket.setKeepAlive(true, HTTP_KEEPALIVE_INITIAL_DELAY_MS);
   });
 
   await new Promise<void>((resolve, reject) => {

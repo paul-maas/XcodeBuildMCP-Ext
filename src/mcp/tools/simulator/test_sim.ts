@@ -63,6 +63,12 @@ const baseSchemaObject = z.object({
     ),
   configuration: z.string().optional().describe('Build configuration (Debug, Release, etc.)'),
   derivedDataPath: z.string().optional(),
+  cleanDerivedData: z
+    .boolean()
+    .optional()
+    .describe(
+      'Remove the DerivedData directory before running for a clean build; avoids the stale helper-signature hang on back-to-back runs against a shared DerivedData. Default false.',
+    ),
   extraArgs: z.array(z.string()).optional(),
   useLatestOS: z
     .boolean()
@@ -230,6 +236,7 @@ export function createTestSimExecutor(
         simulatorName: params.simulatorName,
         configuration: resolved.configuration,
         derivedDataPath: params.derivedDataPath,
+        cleanDerivedData: params.cleanDerivedData,
         extraArgs: params.extraArgs,
         useLatestOS: false,
         preferXcodebuild: params.preferXcodebuild ?? false,

@@ -7,6 +7,7 @@ import type {
   BuildRunResultArtifacts,
   BuildRunResultDomainResult,
   BuildTarget,
+  Counts,
   TestDiagnostics,
   TestResultArtifacts,
   TestResultDomainResult,
@@ -27,6 +28,7 @@ import type { XcodebuildRunState } from './xcodebuild-run-state.js';
 import { collectResolvedTestSelectors, type TestPreflightResult } from './test-preflight.js';
 import { createStreamingExecutionContext } from './tool-execution-compat.js';
 import { isBuildErrorDiagnosticLine } from './xcodebuild-line-parsers.js';
+import type { XcresultTestCounts } from './xcresult-test-failures.js';
 
 const MAX_DISCOVERED_TESTS = 6;
 // Cap the fully-enumerated `selected` list so a large selection (e.g. 1500+ tests)
@@ -173,6 +175,31 @@ function hasTestCounts(state: XcodebuildRunState): boolean {
     state.skippedTests > 0 ||
     state.testFailures.length > 0
   );
+}
+
+function resolveTestCounts(
+  state: XcodebuildRunState,
+  xcresultCounts: XcresultTestCounts | null,
+): Counts | null {
+  // The `.xcresult` bundle records every test case exactly once, so it is the
+  // authoritative source when available.
+  if (xcresultCounts) {
+    return {
+      passed: xcresultCounts.passed,
+      failed: xcresultCounts.failed,
+      skipped: xcresultCounts.skipped,
+    };
+  }
+  // Fallback: counts scraped from stdout. These under-count parallel /
+  // multi-suite runs, so mark them approximate rather than report a number that
+  // silently disagrees with the test outcome.
+  if (!hasTestCounts(state)) {
+    return null;
+  }
+  const failed = Math.max(state.failedTests, state.testFailures.length);
+  const skipped = state.skippedTests;
+  const passed = Math.max(0, state.completedTests - failed - skipped);
+  return { passed, failed, skipped, approximate: true };
 }
 
 export function createTestDiscoveryFragment(
@@ -372,12 +399,11 @@ export function createTestDomainResult(options: {
   fallbackErrorMessages?: readonly string[];
   preflight?: TestPreflightResult;
   request: BuildInvocationRequest;
+  xcresultCounts?: XcresultTestCounts | null;
 }): TestResultDomainResult {
   const { durationMs, pipelineResult } = finalizePipelineResult(options);
   const state = pipelineResult.state;
-  const failed = Math.max(state.failedTests, state.testFailures.length);
-  const skipped = state.skippedTests;
-  const passed = Math.max(0, state.completedTests - failed - skipped);
+  const counts = resolveTestCounts(state, options.xcresultCounts ?? null);
   const testSelectionInfo = createTestSelectionInfo(options.preflight);
   const result: TestResultDomainResult = {
     kind: 'test-result',
@@ -387,15 +413,7 @@ export function createTestDomainResult(options: {
     summary: {
       status: options.succeeded ? 'SUCCEEDED' : 'FAILED',
       durationMs,
-      ...(hasTestCounts(state)
-        ? {
-            counts: {
-              passed,
-              failed,
-              skipped,
-            },
-          }
-        : {}),
+      ...(counts ? { counts } : {}),
       target: options.target,
     },
     artifacts: options.artifacts,

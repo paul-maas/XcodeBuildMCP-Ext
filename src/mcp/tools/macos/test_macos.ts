@@ -36,6 +36,12 @@ const baseSchemaObject = z.object({
   scheme: z.string().describe('The scheme to use'),
   configuration: z.string().optional().describe('Build configuration (Debug, Release, etc.)'),
   derivedDataPath: z.string().optional(),
+  cleanDerivedData: z
+    .boolean()
+    .optional()
+    .describe(
+      'Remove the DerivedData directory before running for a clean build; avoids the stale helper-signature hang on back-to-back runs against a shared DerivedData. Default false.',
+    ),
   extraArgs: z.array(z.string()).optional(),
   preferXcodebuild: z.boolean().optional(),
   testRunnerEnv: z
@@ -121,6 +127,7 @@ export function createTestMacOSExecutor(
         scheme: params.scheme,
         configuration: resolved.configuration,
         derivedDataPath: params.derivedDataPath,
+        cleanDerivedData: params.cleanDerivedData,
         extraArgs: params.extraArgs,
         preferXcodebuild: params.preferXcodebuild ?? false,
         platform: XcodePlatform.macOS,

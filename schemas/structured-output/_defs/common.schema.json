@@ -197,6 +197,10 @@
         "skipped": {
           "type": "integer",
           "minimum": 0
+        },
+        "approximate": {
+          "type": "boolean",
+          "description": "True when counts were scraped from stdout (xcresult unavailable) and may under-count. Omitted when authoritative."
         }
       },
       "required": [

@@ -84,6 +84,8 @@ export interface Counts {
   passed: number;
   failed: number;
   skipped: number;
+  /** True when counts were scraped from stdout (xcresult unavailable) and may under-count. Omitted when authoritative. */
+  approximate?: boolean;
 }
 export interface OrderedEntry {
   key: string;

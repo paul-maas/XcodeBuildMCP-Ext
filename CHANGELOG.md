@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added an opt-in `cleanDerivedData` parameter to `test_macos`, `test_sim`, and `test_device` that removes the DerivedData directory before the run, avoiding the stale ad-hoc-signature hang that can occur on back-to-back test runs against a shared DerivedData. Defaults to false.
+
+### Fixed
+
+- Test result counts (`counts.passed`/`failed`/`skipped`) for `test_macos`/`test_sim`/`test_device` are now derived from the `.xcresult` bundle instead of scraped from stdout, fixing an under-count on parallel or multi-suite runs (for example reporting 14 passed when 77 tests ran). When the bundle is unavailable the parsed counts are still used but flagged with `counts.approximate: true`.
+  - Known limitation: `counts` reflect the final `.xcresult` verdict. A test killed by `-test-timeouts` (or otherwise excluded when XCTest restarts the test bundle) is absent from the bundle and therefore counted in neither `passed` nor `failed` — one or more tests can silently drop from the totals in that case. The run's overall status is unaffected: it is derived from the `xcodebuild` exit code (`succeeded: !result.isError`), so a timed-out run is still reported as failed. Consumers must gate on the run status, never on `counts.failed === 0` alone.
+- HTTP transport: accepted connections now enable TCP keepalive so the container-to-host connection is not reaped by NAT during idle gaps between tool calls (the progress heartbeat only covers in-flight calls).
+- HTTP transport: a new `initialize` request arriving while a tool call is in flight is now refused with `503` instead of taking over the session and killing the running build; idle takeover from a genuine reconnect is unchanged.
+
 ## [2.4.0]
 
 ### Added

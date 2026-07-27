@@ -222,6 +222,28 @@ Each stage ships as a separate PR. Stage 3 ships behind the `--transport http` f
 
 Audit ran against this plan during design. Twelve risks were identified; eleven are either false positives or routinely solvable at implementation time. The one residual design risk requiring an upfront decision is captured in Stage 3.3 (single-session MVP for the native HTTP transport, since `sessionStore` is a module-level singleton).
 
+## Stage 6 — Multi-agent host usage: counts, hygiene, and transport hardening
+
+Context: running the server under multiple AI agents (dev-container QA, 2026-07) surfaced four issues. Analysis concluded contention is a **policy** concern, not an infrastructure gap — so the heavy options (a queue, per-actor isolation) are rejected in favour of a documented invariant plus four small fixes.
+
+### Decision: single-owner-by-phase
+
+The intended deployment has exactly **one legitimate MCP caller at a time**, and ownership follows the sprint phase (dev/merge → orchestrator; QA → tester). Phases do not overlap in time, so concurrent host access is structurally impossible. The one contention incident observed was a discipline breach — an agent using the host MCP during another's phase — not genuine concurrent demand; and such an agent gets *wrong* results anyway (the host MCP cannot see a teammate's Docker `/tmp` worktree, so it returns `main`, not their branch), so the policy is self-enforcing by correctness, not only by rule.
+
+**Load-bearing invariant:** phases must not overlap on the shared host. If the orchestrator ever pipelines phases (e.g. starts dev for sprint N+1 while QA for sprint N is still running `test_macos`), concurrent host demand returns and serialization — a real queue or per-actor DerivedData — becomes necessary. Do not pipeline through one host without revisiting this.
+
+**Explicitly rejected** (YAGNI under single-owner): multi-session / `AsyncLocalStorage` per-session store; per-actor DerivedData or simulator isolation; a host-lock with FIFO tickets plus instance-per-actor; and `initialize` parking (fragile with a vanilla MCP client, which just marks the server "down" on a slow/failed initialize).
+
+### Fixes
+
+1. **Authoritative test counts** (`test_macos`/`test_sim`/`test_device`). `passed` was derived from stdout scraping: per-case lines increment a counter and suite summary lines are combined with `Math.max` (not a sum), so a parallel / multi-suite run whose per-case lines don't match the exact serial format collapses the count to the largest single summary group (observed: `passed: 14` for 77 tests run). Fix: count Passed/Failed/Skipped nodes from the `.xcresult` bundle (`xcresulttool get test-results tests` — the same source already used for `testFailures`) and use them as the authoritative counts; fall back to the parsed counts when the bundle is unavailable, marking `counts.approximate: true` in that case. `testFailures` was already sourced from `.xcresult`, which is why it stayed correct while the count was wrong. Validated 2026-07 against a real ~2194-test suite (SplitTunnelAlpha): passed/approximate/consistency all correct. **Known limitation** surfaced there: counts reflect the *final* `.xcresult` verdict, so a test killed by `-test-timeouts` (or otherwise excluded when XCTest restarts the bundle) is absent from the bundle and lands in neither `passed` nor `failed`. The run **status** is unaffected — it derives from the `xcodebuild` exit code (`succeeded: !result.isError`), so a timed-out run is still reported failed. Consumers must gate on run status, never on `counts.failed === 0` alone. (Same note in CHANGELOG.)
+
+2. **DerivedData hygiene.** Back-to-back `test_macos` against the shared DerivedData can rewrite a helper `LaunchDaemon` binary without refreshing its ad-hoc signature (`cs_mtime != mtime`), so the kernel rejects the demand-launch and the app's helper watchdog gives up (see Empirical validation findings). Opt-in `cleanDerivedData` wipes the effective DerivedData path before the run; default off preserves incremental speed. The orchestrator enables it for back-to-back QA runs; a per-run fresh `-derivedDataPath` is the alternative.
+
+3. **Between-call TCP keepalive.** The progress heartbeat (Layer A1) runs only *during* a tool call. Between calls the container↔host connection sits idle and is reaped by NAT (~165 s). Enable OS-level `SO_KEEPALIVE` on accepted sockets so the mapping stays warm without client cooperation; the heartbeat continues to cover the in-call case.
+
+4. **Non-destructive takeover (belt).** `createSessionTransport` closed the previous session unconditionally on a new `initialize`, killing any in-flight build. Now, if the current session has a POST call in flight, the new `initialize` is refused (`503`, `Retry-After`) instead of taking over — the running build survives; idle takeover (a genuine reconnect) is unaffected. This is defense-in-depth for a discipline breach; the primary mitigation remains single-owner-by-phase plus client reconnect+retry at the orchestrator. Note `inflightRequests` counts the standalone GET stream too, so a separate POST-only counter gates the guard (a held-open GET stream must not read as "busy").
+
 ## References
 
 - `src/utils/tool-registry.ts` — MCP handler registration; now takes the SDK `extra`, builds `ctx.sendProgress`, and runs the heartbeat pump (commit `29e7f077`). `streamingFragmentsEnabled`/`liveProgressEnabled` remain false.

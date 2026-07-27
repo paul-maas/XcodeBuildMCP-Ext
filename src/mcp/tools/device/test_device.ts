@@ -37,6 +37,12 @@ const baseSchemaObject = z.object({
   deviceId: z.string().describe('UDID of the device (obtained from list_devices)'),
   configuration: z.string().optional().describe('Build configuration (Debug, Release)'),
   derivedDataPath: z.string().optional(),
+  cleanDerivedData: z
+    .boolean()
+    .optional()
+    .describe(
+      'Remove the DerivedData directory before running for a clean build; avoids the stale helper-signature hang on back-to-back runs against a shared DerivedData. Default false.',
+    ),
   extraArgs: z.array(z.string()).optional(),
   preferXcodebuild: z.boolean().optional(),
   platform: z.enum(['iOS', 'watchOS', 'tvOS', 'visionOS']).optional(),
@@ -134,6 +140,7 @@ export function createTestDeviceExecutor(
         deviceId: params.deviceId,
         configuration: resolved.configuration,
         derivedDataPath: params.derivedDataPath,
+        cleanDerivedData: params.cleanDerivedData,
         extraArgs: params.extraArgs,
         preferXcodebuild: params.preferXcodebuild ?? false,
         platform: resolved.platform,
